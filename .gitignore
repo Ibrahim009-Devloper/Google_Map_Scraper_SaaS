@@ -8,9 +8,19 @@ __pycache__/
 *$py.class
 *.so
 
-# Output leads and plans (optional, but good practice to keep local exports private)
+# Local SQLite Database & Caches
+data/
+*.db
+*.sqlite3
+
+# Output leads and plans (keep local exports private)
 output/leads/
 output/plans/
+
+# Agent & AI Configuration Files
+GEMINI.md
+.agents/
+skills-lock.json
 
 # Virtual Environments
 venv/
