@@ -1,0 +1,24 @@
+# Environment & Sensitive Keys
+.env
+*.env
+
+# Python Cache & Bytecode
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+
+# Output leads and plans (optional, but good practice to keep local exports private)
+output/leads/
+output/plans/
+
+# Virtual Environments
+venv/
+.venv/
+env/
+
+# IDE & OS Files
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
