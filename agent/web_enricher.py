@@ -35,6 +35,12 @@ EMAIL_REGEX = re.compile(
     re.IGNORECASE
 )
 
+# Linear O(N) Deobfuscation regexes (No catastrophic backtracking)
+RE_OBFUSCATED_AT = re.compile(r"\[\s*(?:at|@)\s*\]|\(\s*(?:at|@)\s*\)|\s+at\s+", re.IGNORECASE)
+RE_OBFUSCATED_DOT = re.compile(r"\[\s*dot\s*\]|\(\s*dot\s*\)|\s+dot\s+", re.IGNORECASE)
+RE_SPACED_AT = re.compile(r"\s*@\s*")
+RE_SPACED_DOT = re.compile(r"\s*\.\s*")
+
 # Common non-email media & file extensions that produce false positives
 JUNK_EXTENSIONS = (
     ".png", ".jpg", ".jpeg", ".gif", ".svg", ".webp", ".bmp", ".ico",
@@ -114,17 +120,16 @@ def decode_cloudflare_email(cf_hex: str) -> Optional[str]:
 def deobfuscate_text(text: str) -> str:
     """
     Deobfuscates text containing HTML entities, URL encodings,
-    and anti-bot patterns like 'info [at] domain [dot] com'.
+    and anti-bot patterns like 'info [at] domain [dot] com' with linear O(N) regex.
     """
     if not text:
         return ""
-    # Decode HTML entities (e.g. &#64;, &#105;, &commat;)
     text = html.unescape(text)
     text = unquote(text)
-    # Strip spaces around [at], (at), and replace with @
-    text = re.sub(r'\s*(?:\[\s*(?:at|@)\s*\]|\(\s*(?:at|@)\s*\)|\s+at\s+)\s*', '@', text, flags=re.IGNORECASE)
-    # Strip spaces around [dot], (dot), and replace with .
-    text = re.sub(r'\s*(?:\[\s*dot\s*\]|\(\s*dot\s*\)|\s+dot\s+)\s*', '.', text, flags=re.IGNORECASE)
+    text = RE_OBFUSCATED_AT.sub("@", text)
+    text = RE_OBFUSCATED_DOT.sub(".", text)
+    text = RE_SPACED_AT.sub("@", text)
+    text = RE_SPACED_DOT.sub(".", text)
     return text
 
 
@@ -342,19 +347,21 @@ def extract_emails_from_page(soup: BeautifulSoup, raw_html: str) -> Set[str]:
                 if is_valid_email(cleaned):
                     found.add(cleaned)
 
-    # 8. Deobfuscated raw HTML text
-    deobfuscated_html = deobfuscate_text(raw_html)
-    for match in EMAIL_REGEX.findall(deobfuscated_html):
-        cleaned = match.strip().strip(".,;:\"'()[]<>{} \t\r\n").lower()
-        if is_valid_email(cleaned):
-            found.add(cleaned)
+    # 8. Raw HTML text (scan directly with EMAIL_REGEX, capped to 150KB to avoid runaway loops)
+    if raw_html:
+        for match in EMAIL_REGEX.findall(raw_html[:150000]):
+            cleaned = match.strip().strip(".,;:\"'()[]<>{} \t\r\n").lower()
+            if is_valid_email(cleaned):
+                found.add(cleaned)
 
-    # 9. Visible soup text
-    soup_text = deobfuscate_text(soup.get_text(separator=" "))
-    for match in EMAIL_REGEX.findall(soup_text):
-        cleaned = match.strip().strip(".,;:\"'()[]<>{} \t\r\n").lower()
-        if is_valid_email(cleaned):
-            found.add(cleaned)
+    # 9. Visible soup text (clean scripts/styles, fast deobfuscate, then regex)
+    soup_text = " ".join([t.strip() for t in soup.find_all(string=True) if t.parent.name not in ("script", "style", "svg", "noscript") and t.strip()])
+    if soup_text:
+        deob_text = deobfuscate_text(soup_text[:50000])
+        for match in EMAIL_REGEX.findall(deob_text):
+            cleaned = match.strip().strip(".,;:\"'()[]<>{} \t\r\n").lower()
+            if is_valid_email(cleaned):
+                found.add(cleaned)
 
     return found
 
@@ -491,12 +498,10 @@ def discover_target_pages(soup: BeautifulSoup, base_url: str, max_pages: int = 3
     return target_queue[:max_pages]
 
 
-def fetch_html(url: str, timeout: int = 6, session: Optional[Any] = None) -> Optional[str]:
+def fetch_html(url: str, timeout: float = 3.5) -> Optional[str]:
     """
     Fetches HTML content with curl_cffi using chrome124 TLS fingerprint.
-    Reuses session if provided to keep connections warm and reduce latency.
-    Fast timeout ensures lightning responsiveness and prevents dead sites
-    from hanging scraper worker threads.
+    Tight timeout prevents slow or hanging sites from stalling scraper worker threads.
     """
     if not url:
         return None
@@ -514,10 +519,8 @@ def fetch_html(url: str, timeout: int = 6, session: Optional[Any] = None) -> Opt
         "Sec-Fetch-User": "?1",
     }
 
-    requester = session if session is not None else requests
-
     try:
-        response = requester.get(
+        response = requests.get(
             clean_url,
             impersonate=DEFAULT_IMPERSONATE,
             timeout=timeout,
@@ -527,15 +530,16 @@ def fetch_html(url: str, timeout: int = 6, session: Optional[Any] = None) -> Opt
         )
         if response.status_code == 200 and response.text:
             return response.text
-    except Exception:
-        # Fallback to http only if https failed due to an SSL/TLS error
-        if clean_url.startswith("https://"):
+    except Exception as e:
+        # Only fallback to http if strictly an SSL/TLS error, NEVER on timeout
+        err_msg = str(e).lower()
+        if "timeout" not in err_msg and clean_url.startswith("https://"):
             try:
                 http_url = clean_url.replace("https://", "http://", 1)
-                response = requester.get(
+                response = requests.get(
                     http_url,
                     impersonate=DEFAULT_IMPERSONATE,
-                    timeout=timeout,
+                    timeout=2.5,
                     verify=False,
                     allow_redirects=True,
                     headers=headers,
@@ -554,16 +558,14 @@ def enrich_single_lead(
     extract_email_opt: bool = True,
     extract_social_opt: bool = True,
     detect_cms_opt: bool = True,
-    max_pages: int = 2,
+    max_pages: int = 1,
 ) -> LeadItem:
     """
     High-Speed website deep-scraper for a single business:
-    1. Fetches Homepage ('/') with 6s timeout and keep-alive Session.
+    1. Fetches Homepage ('/') with 3.5s timeout.
     2. Extracts CMS, socials, phone, and emails.
-    3. EARLY STOPPING: If Homepage already contains a verified domain email,
-       subpage crawling is skipped immediately for maximum speed.
-    4. If no email on Homepage, discovers candidate /contact and /about pages
-       and fetches them concurrently in parallel with keep-alive socket reuse.
+    3. EARLY STOPPING: If Homepage contains a verified domain email, subpage crawling is skipped.
+    4. If no email on Homepage, checks AT MOST 1 contact page with 2.5s timeout.
     5. Saves strictly ONE single highest-ranking authentic email.
     """
     if lead.website_status != "Has Own Website" or not lead.website_url:
@@ -572,15 +574,9 @@ def enrich_single_lead(
     clean_url = clean_website_url(lead.website_url) or lead.website_url
     lead.website_url = clean_url
 
-    session = None
     try:
-        session = requests.Session(impersonate=DEFAULT_IMPERSONATE)
-    except Exception:
-        session = None
-
-    try:
-        # 1. Fetch Homepage
-        html_home = fetch_html(clean_url, timeout=6, session=session)
+        # 1. Fetch Homepage (3.5s max)
+        html_home = fetch_html(clean_url, timeout=3.5)
         if not html_home:
             return lead
 
@@ -614,39 +610,29 @@ def enrich_single_lead(
                         has_domain_email = True
                         break
 
-        # 2. Early Stop: Only crawl subpages if we don't have a verified domain email yet!
+        # 2. Early Stop: Only crawl 1 contact subpage if no domain email on homepage yet!
         if not has_domain_email and (extract_email_opt or extract_social_opt):
-            subpage_urls = discover_target_pages(soup_home, clean_url, max_pages=max_pages)
+            subpage_urls = discover_target_pages(soup_home, clean_url, max_pages=1)
             if subpage_urls:
-                with ThreadPoolExecutor(max_workers=min(2, len(subpage_urls))) as sub_exec:
-                    future_to_url = {sub_exec.submit(fetch_html, u, 4, session): u for u in subpage_urls}
-                    for fut in as_completed(future_to_url):
-                        try:
-                            html_sub = fut.result()
-                            if html_sub:
-                                soup_sub = BeautifulSoup(html_sub, "lxml")
-                                if extract_email_opt:
-                                    sub_emails = extract_emails_from_page(soup_sub, html_sub)
-                                    all_emails.update(sub_emails)
-                                if extract_social_opt:
-                                    lead.social_links = extract_socials(soup_sub, lead.social_links)
-                                if not lead.phone:
-                                    lead.phone = extract_phone_from_soup(soup_sub, country_code=country_code)
-                                if detect_cms_opt and not lead.cms_tech:
-                                    lead.cms_tech = detect_cms(html_sub)
-                        except Exception:
-                            pass
+                contact_url = subpage_urls[0]
+                html_sub = fetch_html(contact_url, timeout=2.5)
+                if html_sub:
+                    soup_sub = BeautifulSoup(html_sub, "lxml")
+                    if extract_email_opt:
+                        all_emails.update(extract_emails_from_page(soup_sub, html_sub))
+                    if extract_social_opt:
+                        lead.social_links = extract_socials(soup_sub, lead.social_links)
+                    if not lead.phone:
+                        lead.phone = extract_phone_from_soup(soup_sub, country_code=country_code)
+                    if detect_cms_opt and not lead.cms_tech:
+                        lead.cms_tech = detect_cms(html_sub)
 
         # 3. Select strictly ONE single best email (no junk, no placeholders, no long lists)
         if extract_email_opt:
             lead.emails = select_best_single_email(all_emails, clean_url)
 
-    finally:
-        if session:
-            try:
-                session.close()
-            except Exception:
-                pass
+    except Exception:
+        pass
 
     return lead
 
@@ -696,6 +682,8 @@ def enrich_leads_concurrently(
 
         for future in as_completed(future_to_pid):
             if stop_event and stop_event.is_set():
+                for f in future_to_pid:
+                    f.cancel()
                 break
             pid = future_to_pid[future]
             try:

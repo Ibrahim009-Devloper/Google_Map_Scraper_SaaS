@@ -152,6 +152,10 @@ def run_pipeline(
     """
     init_db_sync()
 
+    if stop_event is None:
+        import threading
+        stop_event = threading.Event()
+
     if not plan.sub_locations or len(plan.sub_locations) == 0:
         from agent.planner import get_default_sub_locations
         plan.sub_locations = get_default_sub_locations(plan.country_code or "bd")
@@ -280,6 +284,9 @@ def run_pipeline(
             job_status = "stopped"
             return
 
+        if effective_limit and len(filtered_leads) >= effective_limit:
+            return
+
         batch_candidates: List[LeadItem] = []
         for lead in new_raw_leads:
             if lead.place_id not in seen_place_ids:
@@ -314,7 +321,7 @@ def run_pipeline(
                     extract_email_opt=plan.enrichment.extract_emails,
                     extract_social_opt=plan.enrichment.extract_socials,
                     detect_cms_opt=plan.enrichment.detect_cms,
-                    max_pages_per_site=2,
+                    max_pages_per_site=1,
                     stop_event=stop_event,
                     on_lead_completed=save_and_stream_lead,
                 )
