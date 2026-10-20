@@ -88,20 +88,27 @@ def verify_auth_token(token: str, supabase_client: Optional[Any] = None) -> Dict
     if clean_token.lower().startswith("bearer "):
         clean_token = clean_token[7:].strip()
 
+    user_id: Optional[str] = None
     verified_email: Optional[str] = None
     full_name: str = ""
     provider: str = "unknown"
+    role: str = "user"
+    plan_id: str = "free"
+    email_verified: bool = False
+    plan_details: Optional[Dict[str, Any]] = None
 
-    # Strategy 1: Verify via Supabase Auth
+    # Strategy 1: Verify via Supabase Auth Access Token
     if supabase_client is not None:
         try:
             user_resp = supabase_client.auth.get_user(clean_token)
             if user_resp and user_resp.user:
                 sb_user = user_resp.user
+                user_id = str(sb_user.id)
                 verified_email = sb_user.email
                 meta = sb_user.user_metadata or {}
                 full_name = meta.get("full_name") or meta.get("name") or ""
                 provider = sb_user.app_metadata.get("provider", "supabase")
+                email_verified = sb_user.email_confirmed_at is not None
         except Exception:
             pass
 
@@ -123,13 +130,14 @@ def verify_auth_token(token: str, supabase_client: Optional[Any] = None) -> Dict
             verified_email = id_info.get("email")
             full_name = id_info.get("name") or id_info.get("given_name", "")
             provider = "google"
-        except Exception as g_err:
+            email_verified = True
+        except Exception:
             pass
 
     if not verified_email:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Invalid or expired authentication token. Please login with a valid Google account.",
+            detail="Invalid or expired authentication token. Please sign in with Supabase Auth or Google.",
             headers={"WWW-Authenticate": "Bearer"},
         )
 
@@ -137,16 +145,55 @@ def verify_auth_token(token: str, supabase_client: Optional[Any] = None) -> Dict
     if is_disposable_email(verified_email):
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
-            detail="Disposable temporary emails are strictly prohibited. Please sign in with your official Google account.",
+            detail="Disposable temporary emails are strictly prohibited. Please sign in with your official account.",
         )
 
-    user_uid = generate_user_uid(verified_email)
+    user_uid = user_id if user_id else generate_user_uid(verified_email)
+
+    # Strategy 3: Load Role & Plan from Supabase profiles table
+    if supabase_client is not None:
+        try:
+            query = supabase_client.table("profiles").select("*, plans(*)")
+            if user_id:
+                query = query.eq("id", user_id)
+            else:
+                query = query.eq("email", verified_email.lower().strip())
+            
+            prof_resp = query.limit(1).execute()
+            if prof_resp.data and len(prof_resp.data) > 0:
+                prof = prof_resp.data[0]
+                user_id = str(prof["id"])
+                user_uid = user_id
+                role = prof.get("role", "user")
+                plan_id = prof.get("plan_id", "free")
+                email_verified = prof.get("email_verified", email_verified)
+                plan_details = prof.get("plans")
+            elif user_id:
+                # Upsert profile record (Only ibrahim009.developer@gmail.com gets admin role)
+                is_admin_email = verified_email.lower().strip() == "ibrahim009.developer@gmail.com"
+                role = "admin" if is_admin_email else "user"
+                new_profile = {
+                    "id": user_id,
+                    "email": verified_email.lower().strip(),
+                    "full_name": full_name or verified_email.split("@")[0],
+                    "role": role,
+                    "plan_id": "free",
+                    "email_verified": email_verified,
+                }
+                supabase_client.table("profiles").upsert(new_profile).execute()
+        except Exception as prof_err:
+            print(f"[Security] Profile synchronization note: {prof_err}")
 
     return {
+        "id": user_id or user_uid,
         "user_uid": user_uid,
         "email": verified_email.lower().strip(),
         "full_name": full_name or verified_email.split("@")[0],
-        "is_verified": True,
+        "is_verified": email_verified,
+        "email_verified": email_verified,
+        "role": role,
+        "plan_id": plan_id,
+        "plan": plan_details,
         "provider": provider,
     }
 
@@ -172,12 +219,30 @@ def get_current_user_required(
     supabase_client: Optional[Any] = None,
 ) -> Dict[str, Any]:
     """
-    FastAPI dependency that enforces a verified Google authenticated user.
+    FastAPI dependency that enforces an authenticated user with Supabase Auth.
     """
     if not authorization:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Missing Authorization header. Google login required.",
+            detail="Missing Authorization header. Sign in required.",
             headers={"WWW-Authenticate": "Bearer"},
         )
     return verify_auth_token(authorization, supabase_client=supabase_client)
+
+
+def require_admin_user(
+    authorization: Optional[str] = Header(None),
+    supabase_client: Optional[Any] = None,
+) -> Dict[str, Any]:
+    """
+    FastAPI dependency that enforces an Admin user role.
+    Raises 403 Forbidden if user is authenticated but not an admin.
+    """
+    user = get_current_user_required(authorization, supabase_client=supabase_client)
+    if user.get("role") != "admin":
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Forbidden: Admin access required.",
+        )
+    return user
+

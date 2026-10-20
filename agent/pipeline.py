@@ -228,6 +228,16 @@ def run_pipeline(
         if not batch_candidates:
             return
 
+        # Strictly enforce target leads limit so we do not over-collect
+        if effective_limit:
+            remaining = effective_limit - len(filtered_leads)
+            if remaining <= 0:
+                if stop_event and hasattr(stop_event, "set"):
+                    stop_event.set()
+                return
+            if len(batch_candidates) > remaining:
+                batch_candidates = batch_candidates[:remaining]
+
         # 1. IMMEDIATE WEBSITE DEEP SCRAPING (Before saving to DB or streaming to user)
         if plan.enrichment.enabled and any(l.website_status == "Has Own Website" and l.website_url for l in batch_candidates):
             sites_in_batch = sum(1 for l in batch_candidates if l.website_status == "Has Own Website" and l.website_url)

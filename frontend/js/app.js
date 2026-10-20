@@ -15,6 +15,9 @@ let isScrapingRunning = false;
 let startTime = null;
 let lastCount = 0;
 let rateInterval = null;
+let supabaseClient = null;
+let currentUser = null;
+let currentUserProfile = null;
 
 // DOM Cache
 const scraperPrompt = document.getElementById("scraperPrompt");
@@ -60,8 +63,6 @@ const terminalBody = document.getElementById("terminalBody");
 
 // Modals
 const authModal = document.getElementById("authModal");
-const jwtTokenInput = document.getElementById("jwtTokenInput");
-const authSyncStatus = document.getElementById("authSyncStatus");
 const leadModal = document.getElementById("leadModal");
 const leadModalTitle = document.getElementById("leadModalTitle");
 const leadModalContent = document.getElementById("leadModalContent");
@@ -71,20 +72,45 @@ const leadModalContent = document.getElementById("leadModalContent");
 // Initialization & Health Checks
 // ============================================================================
 
-document.addEventListener("DOMContentLoaded", () => {
+document.addEventListener("DOMContentLoaded", async () => {
   setupInputListeners();
   checkServerHealth();
+  await initSupabaseClient();
   updateAuthUI();
 
-  // Close sample dropdown when clicking outside
+  // Show "Login for More Scrape" popup when user enters the page if not authenticated
+  if (!authToken) {
+    setTimeout(() => {
+      openAuthModal();
+    }, 450);
+  }
+
+  // Close sample and user dropdown when clicking outside
   document.addEventListener("click", (e) => {
     if (!e.target.closest("#samplePromptsDropdown") && !e.target.closest('button[onclick="toggleSampleMenu()"]')) {
       samplePromptsDropdown.classList.add("hidden");
+    }
+    const userMenuDropdown = document.getElementById("userMenuDropdown");
+    if (userMenuDropdown && !e.target.closest("#userProfileDropdownContainer")) {
+      userMenuDropdown.classList.add("hidden");
     }
   });
 });
 
 function setupInputListeners() {
+  const customTargetInput = document.getElementById("customTargetInput");
+
+  targetQuotaSelect.addEventListener("change", () => {
+    if (targetQuotaSelect.value === "custom") {
+      if (customTargetInput) {
+        customTargetInput.classList.remove("hidden");
+        customTargetInput.focus();
+      }
+    } else {
+      if (customTargetInput) customTargetInput.classList.add("hidden");
+    }
+  });
+
   scraperPrompt.addEventListener("input", () => {
     const val = scraperPrompt.value;
     const len = val.length;
@@ -97,8 +123,17 @@ function setupInputListeners() {
 
     // Auto-detect target count from user prompt and sync dropdown chip
     const numMatch = val.match(/(\d{1,4})\s*(?:ta|ti|টি|টা|leads?|entities|businesses|companies|restaurants)?/i);
-    if (numMatch && ["50", "100", "250", "500", "1000"].includes(numMatch[1])) {
-      targetQuotaSelect.value = numMatch[1];
+    if (numMatch) {
+      if (["50", "100", "250", "500", "1000"].includes(numMatch[1])) {
+        targetQuotaSelect.value = numMatch[1];
+        if (customTargetInput) customTargetInput.classList.add("hidden");
+      } else {
+        targetQuotaSelect.value = "custom";
+        if (customTargetInput) {
+          customTargetInput.value = numMatch[1];
+          customTargetInput.classList.remove("hidden");
+        }
+      }
     }
   });
 }
@@ -112,7 +147,7 @@ async function checkServerHealth() {
 
     if (res.ok) {
       const data = await res.json();
-      serverHealthText.innerText = data.supabase_connected ? "Live • Supabase Cloud Sync" : "Live (SQLite WAL Mode)";
+      serverHealthText.innerText = data.supabase_connected ? "Live • Cloud Sync" : "Live (SQLite WAL Mode)";
       appendTerminalLog(`[200 OK] Backend connected via HTTP/2 (Latency: ${latency}ms).`);
     } else {
       serverHealthText.innerText = "API Error";
@@ -135,12 +170,21 @@ async function fetchCurrentQuota() {
     if (res.ok) {
       const q = await res.json();
       if (q.is_authenticated) {
-        quotaText.innerText = "Unlimited (Verified)";
+        if (currentUserProfile && currentUserProfile.plan) {
+          const used = currentUserProfile.daily_usage?.leads_scraped || 0;
+          const limit = currentUserProfile.plan.daily_leads_limit;
+          quotaText.innerHTML = `${used.toLocaleString()} / ${limit.toLocaleString()} <span class="text-tertiary font-semibold">(${currentUserProfile.plan.name})</span>`;
+        } else {
+          quotaText.innerText = "Verified Account";
+        }
       } else {
-        quotaText.innerText = `${q.total_leads_scraped.toLocaleString()} / ${q.limit.toLocaleString()}`;
+        const jobsCount = q.jobs_count || 0;
+        const jobLimit = q.job_limit || 1;
+        const leadLimit = q.limit || 100;
+        quotaText.innerHTML = `${q.total_leads_scraped.toLocaleString()} / ${leadLimit.toLocaleString()} (${jobsCount}/${jobLimit} Job)`;
         if (q.is_limit_reached) {
-          quotaText.innerHTML = `${q.total_leads_scraped.toLocaleString()} / ${q.limit.toLocaleString()} <span class="text-rose-600 font-bold">(Limit Reached)</span>`;
-          appendTerminalLog(`[QUOTA] Free anonymous quota of 1,000 leads reached for IP. Sign in to continue.`);
+          quotaText.innerHTML = `${q.total_leads_scraped.toLocaleString()} / ${leadLimit.toLocaleString()} <span class="text-rose-600 font-bold">(Trial Ended - Login Required)</span>`;
+          appendTerminalLog(`[GUEST/LIMIT] 1-time guest trial limit (${leadLimit} leads / ${jobLimit} job) reached. Login to unlock 1,000 leads/day.`);
         }
       }
     }
@@ -163,15 +207,62 @@ async function resetDevQuota() {
 }
 
 function updateAuthUI() {
-  if (authToken) {
-    authBtnLabel.innerText = "Google Account Linked";
-    quotaText.innerText = "Unlimited (Verified)";
-    authBtn.classList.remove("bg-primary-fixed", "text-on-primary-fixed");
-    authBtn.classList.add("bg-emerald-600", "text-white");
+  const userMenuDropdown = document.getElementById("userMenuDropdown");
+  const userMenuEmail = document.getElementById("userMenuEmail");
+  const userMenuPlan = document.getElementById("userMenuPlan");
+  const userMenuRole = document.getElementById("userMenuRole");
+  const adminMenuOption = document.getElementById("adminMenuOption");
+  const userDashboardNavLink = document.getElementById("userDashboardNavLink");
+  const adminDashboardNavLink = document.getElementById("adminDashboardNavLink");
+
+  if (currentUserProfile && currentUserProfile.profile) {
+    const prof = currentUserProfile.profile;
+    const plan = currentUserProfile.plan || { name: "Free Test Plan", daily_leads_limit: 1000 };
+    const usage = currentUserProfile.daily_usage || { leads_scraped: 0, jobs_count: 0 };
+    const isAdmin = currentUserProfile.is_admin === true;
+
+    // Header Button
+    authBtnLabel.innerText = prof.full_name || prof.email.split("@")[0];
+    authBtn.className = "flex items-center gap-2 px-3.5 py-1.5 rounded-full bg-emerald-600 hover:bg-emerald-700 text-white transition-all text-xs font-label font-semibold shadow-sm";
+
+    // Header Dropdown info
+    if (userMenuEmail) userMenuEmail.innerText = prof.email;
+    if (userMenuPlan) userMenuPlan.innerText = `${plan.name}`;
+    if (userMenuRole) userMenuRole.innerText = `Role: ${prof.role.toUpperCase()}`;
+
+    // Sidebar navigation items
+    if (userDashboardNavLink) userDashboardNavLink.classList.remove("hidden");
+    if (adminDashboardNavLink) {
+      if (isAdmin) adminDashboardNavLink.classList.remove("hidden");
+      else adminDashboardNavLink.classList.add("hidden");
+    }
+    if (adminMenuOption) {
+      if (isAdmin) adminMenuOption.classList.remove("hidden");
+      else adminMenuOption.classList.add("hidden");
+    }
+
+    // Top Quota Pill
+    quotaText.innerHTML = `${usage.leads_scraped.toLocaleString()} / ${plan.daily_leads_limit.toLocaleString()} <span class="text-tertiary">(${plan.name})</span>`;
+  } else if (authToken) {
+    authBtnLabel.innerText = "Verified Account";
+    authBtn.className = "flex items-center gap-2 px-3.5 py-1.5 rounded-full bg-emerald-600 hover:bg-emerald-700 text-white transition-all text-xs font-label font-semibold shadow-sm";
+    if (userDashboardNavLink) userDashboardNavLink.classList.remove("hidden");
   } else {
-    authBtnLabel.innerText = "Google Sign In";
-    authBtn.classList.remove("bg-emerald-600", "text-white");
-    authBtn.classList.add("bg-primary-fixed", "text-on-primary-fixed");
+    authBtnLabel.innerText = "Sign In / Register";
+    authBtn.className = "flex items-center gap-2 px-3.5 py-1.5 rounded-full bg-primary-fixed hover:bg-primary-fixed-dim text-on-primary-fixed transition-all text-xs font-label font-semibold shadow-sm";
+    if (userMenuDropdown) userMenuDropdown.classList.add("hidden");
+    if (userDashboardNavLink) userDashboardNavLink.classList.add("hidden");
+    if (adminDashboardNavLink) adminDashboardNavLink.classList.add("hidden");
+    if (adminMenuOption) adminMenuOption.classList.add("hidden");
+  }
+}
+
+function handleAuthButtonClick() {
+  if (currentUserProfile || authToken) {
+    const dropdown = document.getElementById("userMenuDropdown");
+    if (dropdown) dropdown.classList.toggle("hidden");
+  } else {
+    openAuthModal();
   }
 }
 
@@ -191,9 +282,233 @@ function loadSamplePrompt(text) {
   scraperPrompt.focus();
 }
 
+// ============================================================================
+// Problem Center & Community Live Feedback
+// ============================================================================
+
 function scrollToFeedback() {
-  const el = document.getElementById("feedbackReportCard");
-  if (el) el.scrollIntoView({ behavior: "smooth" });
+  openProblemCenterModal();
+}
+
+function openProblemCenterModal() {
+  const modal = document.getElementById("problemCenterModal");
+  if (!modal) return;
+  modal.classList.remove("hidden");
+
+  // Pre-fill name if user is logged in
+  const nameInput = document.getElementById("probReporterName");
+  if (nameInput && !nameInput.value.trim()) {
+    if (currentUserProfile && currentUserProfile.full_name) {
+      nameInput.value = currentUserProfile.full_name;
+    } else if (currentUser && currentUser.email) {
+      nameInput.value = currentUser.email.split("@")[0];
+    }
+  }
+
+  initStarRatingSelector();
+  loadLiveProblemFeed();
+}
+
+function closeProblemCenterModal() {
+  const modal = document.getElementById("problemCenterModal");
+  if (modal) modal.classList.add("hidden");
+}
+
+function initStarRatingSelector() {
+  const container = document.getElementById("probRatingSelector");
+  if (!container || container.dataset.initialized === "true") return;
+  container.dataset.initialized = "true";
+
+  const buttons = container.querySelectorAll(".prob-star");
+  const hiddenInput = document.getElementById("probSelectedRating");
+  const label = document.getElementById("probRatingLabel");
+
+  const descriptions = {
+    1: "1 / 5 (Critical Issue / Bug)",
+    2: "2 / 5 (Problem / Error)",
+    3: "3 / 5 (Suggestion / Neutral)",
+    4: "4 / 5 (Good / Feedback)",
+    5: "5 / 5 (Praise & Feedback)",
+  };
+
+  function updateStars(val) {
+    if (hiddenInput) hiddenInput.value = val;
+    if (label) label.innerText = descriptions[val] || `${val} / 5`;
+    buttons.forEach(btn => {
+      const starVal = Number(btn.getAttribute("data-val"));
+      const icon = btn.querySelector(".material-symbols-outlined");
+      if (icon) {
+        if (starVal <= val) {
+          icon.className = "material-symbols-outlined text-[24px] text-amber-500 fill-1";
+        } else {
+          icon.className = "material-symbols-outlined text-[24px] text-slate-300";
+        }
+      }
+    });
+  }
+
+  buttons.forEach(btn => {
+    btn.addEventListener("click", () => {
+      const val = Number(btn.getAttribute("data-val")) || 5;
+      updateStars(val);
+    });
+  });
+
+  updateStars(5);
+}
+
+async function handleProblemReportSubmit(event) {
+  if (event) event.preventDefault();
+  const nameInput = document.getElementById("probReporterName");
+  const ratingInput = document.getElementById("probSelectedRating");
+  const descInput = document.getElementById("probDescription");
+  const wantsProInput = document.getElementById("probWantsPro");
+  const submitBtn = document.getElementById("probSubmitBtn");
+
+  const name = nameInput ? nameInput.value.trim() : "";
+  const rating = ratingInput ? Number(ratingInput.value) || 5 : 5;
+  const comment = descInput ? descInput.value.trim() : "";
+  const wants_paid_version = wantsProInput ? wantsProInput.checked : false;
+
+  if (!name) {
+    showToast("Please enter your name.", "error");
+    if (nameInput) nameInput.focus();
+    return;
+  }
+
+  if (!comment || comment.length < 5) {
+    showToast("Please describe the problem in at least 5 characters.", "error");
+    if (descInput) descInput.focus();
+    return;
+  }
+
+  if (submitBtn) {
+    submitBtn.disabled = true;
+    submitBtn.innerHTML = `<span class="animate-spin material-symbols-outlined text-[16px]">sync</span> Submitting Report...`;
+  }
+
+  try {
+    const headers = { "Content-Type": "application/json" };
+    if (authToken) {
+      headers["Authorization"] = `Bearer ${authToken}`;
+    }
+
+    const res = await fetch("/api/reviews", {
+      method: "POST",
+      headers,
+      body: JSON.stringify({
+        name,
+        rating,
+        comment,
+        wants_paid_version
+      })
+    });
+
+    const data = await res.json();
+    if (res.ok) {
+      showToast("Problem report submitted & posted live!", "success");
+      if (descInput) descInput.value = "";
+      loadLiveProblemFeed();
+    } else {
+      showToast(data.detail || "Failed to submit report. Please try again.", "error");
+    }
+  } catch (err) {
+    showToast(err.message, "error");
+  } finally {
+    if (submitBtn) {
+      submitBtn.disabled = false;
+      submitBtn.innerHTML = `<span class="material-symbols-outlined text-[16px]">send</span> Submit Report &amp; Post Live`;
+    }
+  }
+}
+
+async function loadLiveProblemFeed() {
+  const container = document.getElementById("probFeedContainer");
+  const countEl = document.getElementById("probFeedCount");
+  if (!container) return;
+
+  container.innerHTML = `
+    <div class="p-8 text-center text-secondary text-xs flex flex-col items-center justify-center gap-2">
+      <span class="animate-spin material-symbols-outlined text-[20px] text-primary">sync</span>
+      <span>Loading real-time community feed...</span>
+    </div>
+  `;
+
+  try {
+    const res = await fetch("/api/reviews?limit=50");
+    if (res.ok) {
+      const data = await res.json();
+      const reviews = Array.isArray(data) ? data : (data.reviews || []);
+      if (countEl) countEl.innerText = `(${reviews.length} reports)`;
+
+      if (!reviews || reviews.length === 0) {
+        container.innerHTML = `
+          <div class="p-8 rounded-xl bg-surface-container-low text-center flex flex-col items-center gap-2 text-secondary text-xs">
+            <span class="material-symbols-outlined text-[32px] text-secondary/60">support_agent</span>
+            <p class="font-medium text-on-surface">No problem reports yet</p>
+            <p class="text-[11px]">Be the first to submit a problem or review using the form on the left!</p>
+          </div>
+        `;
+        return;
+      }
+
+      container.innerHTML = reviews.map(r => {
+        const rating = Number(r.rating) || 5;
+        const isProblem = rating <= 2;
+        const isNeutral = rating === 3;
+        const name = r.user_name || (r.user_email ? r.user_email.split("@")[0] : "Anonymous User");
+
+        const initials = name.slice(0, 2).toUpperCase();
+
+        let starsHtml = "";
+        for (let i = 1; i <= 5; i++) {
+          starsHtml += `<span class="material-symbols-outlined text-[12px] ${i <= rating ? 'text-amber-500 fill-1' : 'text-slate-300'}">star</span>`;
+        }
+
+        let badge = "";
+        if (isProblem) {
+          badge = `<span class="px-2 py-0.5 rounded text-[10px] font-bold uppercase bg-red-100 text-red-800 border border-red-300 flex items-center gap-1"><span class="w-1.5 h-1.5 rounded-full bg-red-600"></span>Issue / Bug</span>`;
+        } else if (isNeutral) {
+          badge = `<span class="px-2 py-0.5 rounded text-[10px] font-bold uppercase bg-amber-100 text-amber-800 border border-amber-300 flex items-center gap-1"><span class="w-1.5 h-1.5 rounded-full bg-amber-600"></span>Suggestion</span>`;
+        } else {
+          badge = `<span class="px-2 py-0.5 rounded text-[10px] font-bold uppercase bg-emerald-100 text-emerald-800 border border-emerald-300 flex items-center gap-1"><span class="w-1.5 h-1.5 rounded-full bg-emerald-600"></span>Review</span>`;
+        }
+
+        let timeStr = "Recently";
+        if (r.created_at) {
+          try {
+            const d = new Date(r.created_at);
+            timeStr = d.toLocaleDateString([], { month: "short", day: "numeric" }) + " " + d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+          } catch (_) {}
+        }
+
+        return `
+          <div class="p-3.5 rounded-xl border ${isProblem ? 'border-red-200 bg-red-50/30' : 'border-surface-container-high/60 bg-surface-container-lowest'} flex flex-col gap-2 transition-all hover:shadow-sm">
+            <div class="flex items-center justify-between">
+              <div class="flex items-center gap-2">
+                <div class="w-7 h-7 rounded-full ${isProblem ? 'bg-red-100 text-red-700' : 'bg-primary-fixed text-primary'} flex items-center justify-center font-bold text-[10px]">
+                  ${escapeHtml(initials)}
+                </div>
+                <div class="flex flex-col">
+                  <span class="font-semibold text-xs text-on-surface leading-tight">${escapeHtml(name)}</span>
+                  <span class="font-mono text-[10px] text-secondary">${timeStr}</span>
+                </div>
+              </div>
+              <div class="flex items-center gap-2">
+                <div class="flex items-center">${starsHtml}</div>
+                ${badge}
+              </div>
+            </div>
+            <p class="text-xs text-on-surface leading-relaxed pl-9 whitespace-pre-wrap">${escapeHtml(r.comment || '')}</p>
+          </div>
+        `;
+      }).join("");
+    } else {
+      container.innerHTML = `<div class="p-6 text-center text-error text-xs">Failed to load community feed.</div>`;
+    }
+  } catch (err) {
+    container.innerHTML = `<div class="p-6 text-center text-error text-xs">${escapeHtml(err.message)}</div>`;
+  }
 }
 
 
@@ -213,8 +528,25 @@ async function startScrapingJob() {
     return;
   }
 
-  const provider = providerSelect.value;
-  const targetQuota = parseInt(targetQuotaSelect.value, 10) || 100;
+  const provider = (providerSelect && providerSelect.value) ? providerSelect.value : "gemini";
+
+  let targetQuota = 100;
+  const customTargetInput = document.getElementById("customTargetInput");
+  if (targetQuotaSelect.value === "custom") {
+    const customVal = parseInt(customTargetInput.value, 10);
+    if (!customVal || customVal < 1) {
+      showToast("Please enter a valid custom number of leads (e.g. 75).", "error");
+      if (customTargetInput) customTargetInput.focus();
+      return;
+    }
+    targetQuota = customVal;
+  } else {
+    targetQuota = parseInt(targetQuotaSelect.value, 10) || 100;
+  }
+
+  const scrapeWebsitesToggle = document.getElementById("scrapeWebsitesToggle");
+  const scrapeWebsite = scrapeWebsitesToggle ? scrapeWebsitesToggle.checked : false;
+
   progressTargetText.innerText = `of ${targetQuota} target entities`;
 
   // UI state transition
@@ -225,7 +557,8 @@ async function startScrapingJob() {
   leadsFeedContainer.innerHTML = "";
   renderEmptyState("Initializing AI Geo-Planner & reverse protobuf query...");
 
-  appendTerminalLog(`[AI/PLAN] Dispatching user prompt to ${provider.toUpperCase()} Geo-Planner: "${prompt.slice(0, 60)}..."`);
+  appendTerminalLog(`[AI/PLAN] Dispatching user prompt to Geo-Planner: "${prompt.slice(0, 60)}..."`);
+  appendTerminalLog(`[CONFIG] Target: ${targetQuota} leads | Website Scraping: ${scrapeWebsite ? "ENABLED (Extract emails & socials)" : "DISABLED (Fast Google Maps Only)"}`);
 
   try {
     const headers = { "Content-Type": "application/json" };
@@ -236,7 +569,12 @@ async function startScrapingJob() {
     const res = await fetch("/api/scrape/start", {
       method: "POST",
       headers,
-      body: JSON.stringify({ prompt, provider, target_leads: targetQuota }),
+      body: JSON.stringify({
+        prompt,
+        provider,
+        target_leads: targetQuota,
+        scrape_website: scrapeWebsite,
+      }),
     });
 
     const data = await res.json();
@@ -246,6 +584,20 @@ async function startScrapingJob() {
       showToast(errMsg, "error");
       appendTerminalLog(`[ERR] Failed to start scraping: ${errMsg}`);
       setScrapingState(false);
+
+      // Trigger Login popup if guest limit reached
+      const statusType = data.detail?.status || data.detail?.code;
+      if (statusType === "limit_reached_login_required" || statusType === "GUEST_JOB_LIMIT_EXCEEDED" || statusType === "GUEST_LEAD_LIMIT_EXCEEDED") {
+        setTimeout(() => {
+          openAuthModal();
+          const alertBox = document.getElementById("authAlertBox");
+          if (alertBox) {
+            alertBox.className = "p-3 rounded-lg text-xs font-body leading-relaxed bg-amber-50 text-amber-900 border border-amber-300";
+            alertBox.innerHTML = `<strong>Guest Trial Completed:</strong> ${escapeHtml(errMsg)}<br><span class="font-semibold text-primary mt-1 block">Please sign in with Google or create an account to unlock 1,000 Leads/Day, 3 Jobs/Day, and 300 Leads/Job.</span>`;
+            alertBox.classList.remove("hidden");
+          }
+        }, 300);
+      }
       return;
     }
 
@@ -277,7 +629,7 @@ function initSSEStream(jobId, targetQuota) {
     appendTerminalLog(`[STREAM] Server-Sent Events bus connected for job ${jobId}.`);
   };
 
-  eventSource.onmessage = (event) => {
+  eventSource.onmessage = async (event) => {
     try {
       const data = JSON.parse(event.data);
 
@@ -336,13 +688,27 @@ function initSSEStream(jobId, targetQuota) {
 
       // Update Status and Quota
       if (!authToken) {
-        quotaText.innerText = `${allLeads.length} / 1,000`;
+        quotaText.innerText = `${allLeads.length} / 100 (1 Job)`;
       }
 
       // Check if job finished
       if (data.done) {
         appendTerminalLog(`[DONE] Scraper finished with status: ${data.status.toUpperCase()}. Total collected: ${allLeads.length} leads.`);
         stopCurrentJob(true, data.status);
+        await fetchCurrentQuota();
+
+        // Prompt guest to login if trial completed
+        if (!authToken) {
+          setTimeout(() => {
+            openAuthModal();
+            const alertBox = document.getElementById("authAlertBox");
+            if (alertBox) {
+              alertBox.className = "p-3 rounded-lg text-xs font-body leading-relaxed bg-emerald-50 text-emerald-900 border border-emerald-300";
+              alertBox.innerHTML = `<strong>1-Time Guest Trial Finished!</strong> You harvested <strong>${allLeads.length} leads</strong>.<br><span class="text-primary font-semibold mt-1 block">Sign in now with Google or create an account to unlock 1,000 Leads/Day, 3 Jobs/Day, and 300 Leads/Job!</span>`;
+              alertBox.classList.remove("hidden");
+            }
+          }, 1200);
+        }
       }
 
     } catch (e) {
@@ -738,7 +1104,7 @@ async function submitReviewFeedback() {
     if (res.ok) {
       btn.innerHTML = `<span class="material-symbols-outlined text-[16px]">check_circle</span> Submitted`;
       btn.className = "w-full flex items-center justify-center gap-2 px-4 py-2 rounded-lg bg-emerald-600 text-white text-xs font-label uppercase tracking-wider font-semibold";
-      notice.innerText = "Thank you! Your feedback has been committed to Supabase registry.";
+      notice.innerText = "Thank you! Your feedback has been committed to cloud registry.";
       textInput.value = "";
       appendTerminalLog(`[FEEDBACK] Submitted product review (${currentRating}★). Synced to Cloud database.`);
       showToast("Thank you for your valuable feedback!", "success");
@@ -757,58 +1123,809 @@ async function submitReviewFeedback() {
 
 
 // ============================================================================
-// Auth & Supabase Cloud Sync Modal
+// Supabase Auth, User Dashboard & Admin Management
 // ============================================================================
 
+async function initSupabaseClient() {
+  try {
+    const res = await fetch("/api/auth/config");
+    if (res.ok) {
+      const config = await res.json();
+      if (window.supabase && config.supabase_url && config.supabase_anon_key) {
+        supabaseClient = window.supabase.createClient(config.supabase_url, config.supabase_anon_key);
+
+        // Listen for Supabase Auth state transitions
+        supabaseClient.auth.onAuthStateChange(async (event, session) => {
+          if (session && session.access_token) {
+            authToken = session.access_token;
+            localStorage.setItem("gmaps_auth_token", authToken);
+            currentUser = session.user;
+            await fetchUserProfile();
+          } else if (event === "SIGNED_OUT") {
+            authToken = null;
+            currentUser = null;
+            currentUserProfile = null;
+            localStorage.removeItem("gmaps_auth_token");
+            updateAuthUI();
+            await fetchCurrentQuota();
+          }
+        });
+
+        // Restore active session
+        const { data: { session } } = await supabaseClient.auth.getSession();
+        if (session && session.access_token) {
+          authToken = session.access_token;
+          localStorage.setItem("gmaps_auth_token", authToken);
+          currentUser = session.user;
+          await fetchUserProfile();
+        } else if (authToken) {
+          await fetchUserProfile();
+        }
+      }
+    }
+  } catch (err) {
+    console.warn("Could not initialize Supabase Auth client:", err);
+  }
+}
+
+async function fetchUserProfile() {
+  if (!authToken) return null;
+  try {
+    const res = await fetch("/api/user/me", {
+      headers: { "Authorization": `Bearer ${authToken}` }
+    });
+    if (res.ok) {
+      currentUserProfile = await res.json();
+      updateAuthUI();
+      return currentUserProfile;
+    } else if (res.status === 401) {
+      authToken = null;
+      currentUserProfile = null;
+      localStorage.removeItem("gmaps_auth_token");
+      updateAuthUI();
+    }
+  } catch (err) {
+    console.warn("Error fetching user profile:", err);
+  }
+  return null;
+}
+
+function clearAuthInputs() {
+  const signInEmail = document.getElementById("signInEmail");
+  const signInPassword = document.getElementById("signInPassword");
+  const signUpName = document.getElementById("signUpName");
+  const signUpEmail = document.getElementById("signUpEmail");
+  const signUpPassword = document.getElementById("signUpPassword");
+  const signInForm = document.getElementById("signInForm");
+  const signUpForm = document.getElementById("signUpForm");
+  const alertBox = document.getElementById("authAlertBox");
+
+  if (signInEmail) signInEmail.value = "";
+  if (signInPassword) signInPassword.value = "";
+  if (signUpName) signUpName.value = "";
+  if (signUpEmail) signUpEmail.value = "";
+  if (signUpPassword) signUpPassword.value = "";
+  if (signInForm) signInForm.reset();
+  if (signUpForm) signUpForm.reset();
+  if (alertBox) {
+    alertBox.innerHTML = "";
+    alertBox.classList.add("hidden");
+  }
+}
+
 function openAuthModal() {
+  clearAuthInputs();
   authModal.classList.remove("hidden");
+  switchAuthTab("signin");
 }
 
 function closeAuthModal() {
-  authModal.classList.add("hidden");
-  authSyncStatus.classList.add("hidden");
+  clearAuthInputs();
+  if (authModal) authModal.classList.add("hidden");
 }
 
-async function authenticateUser() {
-  const token = jwtTokenInput.value.trim();
-  
-  // If user provided a token or simulation
-  if (token) {
-    authToken = token.replace(/^Bearer\s+/i, "");
-    localStorage.setItem("gmaps_auth_token", authToken);
+function switchAuthTab(tab) {
+  const signInBtn = document.getElementById("tabSignInBtn");
+  const signUpBtn = document.getElementById("tabSignUpBtn");
+  const signInForm = document.getElementById("signInForm");
+  const signUpForm = document.getElementById("signUpForm");
+  const alertBox = document.getElementById("authAlertBox");
+  if (alertBox) alertBox.classList.add("hidden");
+
+  if (tab === "signin") {
+    if (signInBtn) signInBtn.className = "flex-1 py-1.5 rounded-md font-semibold text-primary bg-surface-container-lowest shadow-sm transition-all";
+    if (signUpBtn) signUpBtn.className = "flex-1 py-1.5 rounded-md font-semibold text-secondary hover:text-on-surface transition-all";
+    if (signInForm) signInForm.classList.remove("hidden");
+    if (signUpForm) signUpForm.classList.add("hidden");
   } else {
-    // Demonstration demo token
-    authToken = "demo_verified_token";
-    localStorage.setItem("gmaps_auth_token", authToken);
+    if (signUpBtn) signUpBtn.className = "flex-1 py-1.5 rounded-md font-semibold text-primary bg-surface-container-lowest shadow-sm transition-all";
+    if (signInBtn) signInBtn.className = "flex-1 py-1.5 rounded-md font-semibold text-secondary hover:text-on-surface transition-all";
+    if (signUpForm) signUpForm.classList.remove("hidden");
+    if (signInForm) signInForm.classList.add("hidden");
+  }
+}
+
+async function handleEmailSignIn(event) {
+  if (event) event.preventDefault();
+  const emailInput = document.getElementById("signInEmail");
+  const passInput = document.getElementById("signInPassword");
+  const email = emailInput ? emailInput.value.trim() : "";
+  const password = passInput ? passInput.value : "";
+  const submitBtn = document.getElementById("signInSubmitBtn");
+  const alertBox = document.getElementById("authAlertBox");
+
+  if (!email || !password) {
+    showToast("Please enter both email and password.", "error");
+    return;
   }
 
-  updateAuthUI();
-  authSyncStatus.classList.remove("hidden");
-  authSyncStatus.innerText = "Account verified! Checking session sync...";
+  if (submitBtn) {
+    submitBtn.disabled = true;
+    submitBtn.innerHTML = `<span class="animate-spin material-symbols-outlined text-[16px]">sync</span> Authenticating...`;
+  }
 
-  // If there's an active or past job, sync it to Supabase
-  if (currentJobId) {
-    try {
-      const res = await fetch("/api/auth/sync-session", {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          "Authorization": `Bearer ${authToken}`,
-        },
-        body: JSON.stringify({ job_id: currentJobId }),
-      });
-      const data = await res.json();
-      if (res.ok) {
-        authSyncStatus.innerText = `Successfully synced ${data.leads_synced || allLeads.length} leads to your Supabase Cloud account!`;
-        appendTerminalLog(`[SUPABASE] Session ${currentJobId} permanently synced to user cloud storage.`);
+  try {
+    if (supabaseClient) {
+      const { data, error } = await supabaseClient.auth.signInWithPassword({ email, password });
+      if (error) {
+        if (alertBox) {
+          alertBox.className = "p-3 rounded-lg text-xs font-body leading-relaxed bg-red-50 text-red-900 border border-red-200";
+          alertBox.innerHTML = `<strong>Sign In Failed:</strong> ${escapeHtml(error.message)}`;
+          alertBox.classList.remove("hidden");
+        }
+        showToast(error.message, "error");
+        return;
       }
-    } catch (err) {
-      console.warn("Session sync notice:", err);
+
+      authToken = data.session.access_token;
+      localStorage.setItem("gmaps_auth_token", authToken);
+      currentUser = data.user;
+      clearAuthInputs();
+      await fetchUserProfile();
+      showToast("Signed in successfully!", "success");
+      closeAuthModal();
+    } else {
+      showToast("Supabase client not initialized.", "error");
+    }
+  } catch (err) {
+    showToast(err.message, "error");
+  } finally {
+    if (submitBtn) {
+      submitBtn.disabled = false;
+      submitBtn.innerHTML = `<span class="material-symbols-outlined text-[16px]">login</span> Sign In`;
     }
   }
+}
 
-  showToast("Authenticated successfully!", "success");
-  setTimeout(closeAuthModal, 1500);
+async function handleEmailSignUp(event) {
+  if (event) event.preventDefault();
+  const nameInput = document.getElementById("signUpName");
+  const emailInput = document.getElementById("signUpEmail");
+  const passInput = document.getElementById("signUpPassword");
+  const name = nameInput ? nameInput.value.trim() : "";
+  const email = emailInput ? emailInput.value.trim() : "";
+  const password = passInput ? passInput.value : "";
+  const submitBtn = document.getElementById("signUpSubmitBtn");
+  const alertBox = document.getElementById("authAlertBox");
+
+  if (!name || !email || !password) {
+    showToast("Please fill in all registration fields.", "error");
+    return;
+  }
+
+  if (password.length < 6) {
+    showToast("Password must be at least 6 characters.", "error");
+    return;
+  }
+
+  if (submitBtn) {
+    submitBtn.disabled = true;
+    submitBtn.innerHTML = `<span class="animate-spin material-symbols-outlined text-[16px]">sync</span> Creating Account...`;
+  }
+
+  try {
+    // 1. Register through the secure backend endpoint to bypass Supabase free email rate limits
+    const regRes = await fetch("/api/auth/register", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ name, email, password }),
+    });
+
+    const regData = await regRes.json();
+
+    if (!regRes.ok) {
+      const errMsg = regData.detail || "Registration failed. Please try again.";
+      if (alertBox) {
+        alertBox.className = "p-3 rounded-lg text-xs font-body leading-relaxed bg-red-50 text-red-900 border border-red-200";
+        alertBox.innerHTML = `<strong>Registration Failed:</strong> ${escapeHtml(errMsg)}`;
+        alertBox.classList.remove("hidden");
+      }
+      showToast(errMsg, "error");
+      if (regRes.status === 409) {
+        switchAuthTab("signin");
+        const signInEmail = document.getElementById("signInEmail");
+        if (signInEmail) signInEmail.value = email;
+      }
+      return;
+    }
+
+    // 2. Account created and pre-confirmed! Now sign in directly to establish active session
+    if (supabaseClient) {
+      const { data, error } = await supabaseClient.auth.signInWithPassword({ email, password });
+      if (error) {
+        showToast("Account created! Please sign in with your password.", "success");
+        switchAuthTab("signin");
+        const signInEmail = document.getElementById("signInEmail");
+        if (signInEmail) signInEmail.value = email;
+        return;
+      }
+
+      if (data && data.session) {
+        authToken = data.session.access_token;
+        localStorage.setItem("gmaps_auth_token", authToken);
+        currentUser = data.user;
+        clearAuthInputs();
+        await fetchUserProfile();
+        showToast("Account created and signed in!", "success");
+        closeAuthModal();
+      }
+    } else {
+      showToast("Account created! Please sign in.", "success");
+      switchAuthTab("signin");
+    }
+  } catch (err) {
+    showToast(err.message, "error");
+  } finally {
+    if (submitBtn) {
+      submitBtn.disabled = false;
+      submitBtn.innerHTML = `<span class="material-symbols-outlined text-[16px]">person_add</span> Create Account &amp; Start Scraping`;
+    }
+  }
+}
+
+async function handleGoogleSignIn() {
+  if (supabaseClient) {
+    try {
+      const { error } = await supabaseClient.auth.signInWithOAuth({
+        provider: "google",
+        options: { redirectTo: window.location.origin },
+      });
+      if (error) showToast("Google Sign In Error: " + error.message, "error");
+    } catch (err) {
+      showToast(err.message, "error");
+    }
+  } else {
+    showToast("Connecting to authentication service...", "info");
+  }
+}
+
+async function signOutUser() {
+  try {
+    if (supabaseClient) {
+      await supabaseClient.auth.signOut();
+    }
+  } catch (err) {
+    console.warn("Sign out notice:", err);
+  }
+  authToken = null;
+  currentUser = null;
+  currentUserProfile = null;
+  localStorage.removeItem("gmaps_auth_token");
+  sessionStorage.clear();
+  clearAuthInputs();
+  updateAuthUI();
+  showToast("You have been signed out.", "info");
+  await fetchCurrentQuota();
+}
+
+async function openUserDashboardModal() {
+  if (!authToken) {
+    openAuthModal();
+    return;
+  }
+
+  const modal = document.getElementById("userDashboardModal");
+  modal.classList.remove("hidden");
+
+  await fetchUserProfile();
+  if (currentUserProfile) {
+    const prof = currentUserProfile.profile;
+    const plan = currentUserProfile.plan;
+    const usage = currentUserProfile.daily_usage;
+
+    const emailEl = document.getElementById("dashUserEmail");
+    const planNameEl = document.getElementById("dashPlanName");
+    const planPriceEl = document.getElementById("dashPlanPrice");
+    const leadsTodayEl = document.getElementById("dashLeadsToday");
+    const leadsLimitEl = document.getElementById("dashLeadsLimit");
+    const leadsProgressEl = document.getElementById("dashLeadsProgress");
+    const leadsRemEl = document.getElementById("dashLeadsRemaining");
+    const jobsTodayEl = document.getElementById("dashJobsToday");
+    const jobsLimitEl = document.getElementById("dashJobsLimit");
+    const jobsProgressEl = document.getElementById("dashJobsProgress");
+
+    if (emailEl) emailEl.innerText = `${prof.email} • Registered ${new Date(prof.created_at).toLocaleDateString()}`;
+    if (planNameEl) planNameEl.innerText = plan.name;
+    if (planPriceEl) planPriceEl.innerText = `${plan.price_bdt.toLocaleString()} BDT / month`;
+    
+    if (leadsTodayEl) leadsTodayEl.innerText = usage.leads_scraped.toLocaleString();
+    if (leadsLimitEl) leadsLimitEl.innerText = `/ ${plan.daily_leads_limit.toLocaleString()}`;
+    const leadsPct = Math.min(100, Math.round((usage.leads_scraped / plan.daily_leads_limit) * 100));
+    if (leadsProgressEl) leadsProgressEl.style.width = `${leadsPct}%`;
+    const leadsRemaining = Math.max(0, plan.daily_leads_limit - usage.leads_scraped);
+    if (leadsRemEl) leadsRemEl.innerText = `${leadsRemaining.toLocaleString()} leads remaining today`;
+
+    if (jobsTodayEl) jobsTodayEl.innerText = usage.jobs_count;
+    if (jobsLimitEl) jobsLimitEl.innerText = `/ ${plan.daily_jobs_limit} jobs`;
+    const jobsPct = Math.min(100, Math.round((usage.jobs_count / plan.daily_jobs_limit) * 100));
+    if (jobsProgressEl) jobsProgressEl.style.width = `${jobsPct}%`;
+  }
+
+  await loadUserJobHistory();
+}
+
+function closeUserDashboardModal() {
+  const modal = document.getElementById("userDashboardModal");
+  if (modal) modal.classList.add("hidden");
+}
+
+async function loadUserJobHistory() {
+  const tableBody = document.getElementById("userJobsTableBody");
+  if (!tableBody || !authToken) return;
+
+  tableBody.innerHTML = `<tr><td colspan="5" class="px-3.5 py-4 text-center text-secondary">Loading jobs history...</td></tr>`;
+
+  try {
+    const res = await fetch("/api/user/jobs", {
+      headers: { "Authorization": `Bearer ${authToken}` }
+    });
+    if (res.ok) {
+      const data = await res.json();
+      const jobs = Array.isArray(data) ? data : (data.jobs || []);
+      if (!jobs || jobs.length === 0) {
+        tableBody.innerHTML = `<tr><td colspan="5" class="px-3.5 py-6 text-center text-secondary">No scraping jobs dispatched yet. Start your first job from the top bar!</td></tr>`;
+        return;
+      }
+
+      tableBody.innerHTML = jobs.map(job => {
+        const dateStr = new Date(job.created_at).toLocaleString([], { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" });
+        let statusBadge = `<span class="px-2 py-0.5 rounded text-[10px] font-semibold bg-primary-fixed text-primary">RUNNING</span>`;
+        if (job.status === "completed") {
+          statusBadge = `<span class="px-2 py-0.5 rounded text-[10px] font-semibold bg-emerald-100 text-emerald-800">COMPLETED</span>`;
+        } else if (job.status === "stopped") {
+          statusBadge = `<span class="px-2 py-0.5 rounded text-[10px] font-semibold bg-amber-100 text-amber-800">STOPPED</span>`;
+        } else if (job.status === "failed") {
+          statusBadge = `<span class="px-2 py-0.5 rounded text-[10px] font-semibold bg-red-100 text-red-800">FAILED</span>`;
+        }
+
+        return `
+          <tr class="hover:bg-surface-container/60 transition-colors">
+            <td class="px-3.5 py-2.5 text-secondary whitespace-nowrap">${dateStr}</td>
+            <td class="px-3.5 py-2.5 text-on-surface font-medium max-w-[200px] truncate" title="${escapeHtml(job.prompt)}">${escapeHtml(job.prompt)}</td>
+            <td class="px-3.5 py-2.5 whitespace-nowrap">${statusBadge}</td>
+            <td class="px-3.5 py-2.5 whitespace-nowrap font-mono text-[11px]"><strong class="text-primary">${job.leads_scraped}</strong> / ${job.target_leads}</td>
+            <td class="px-3.5 py-2.5 whitespace-nowrap">
+              <a href="/api/export/csv/${job.job_id}" target="_blank" class="px-2 py-1 rounded bg-surface-container hover:bg-surface-container-high text-primary font-label text-[11px] font-semibold transition-colors inline-flex items-center gap-1">
+                <span class="material-symbols-outlined text-[14px]">download</span> CSV
+              </a>
+            </td>
+          </tr>
+        `;
+      }).join("");
+    } else {
+      tableBody.innerHTML = `<tr><td colspan="5" class="px-3.5 py-4 text-center text-error">Failed to fetch job history.</td></tr>`;
+    }
+  } catch (err) {
+    tableBody.innerHTML = `<tr><td colspan="5" class="px-3.5 py-4 text-center text-error">${escapeHtml(err.message)}</td></tr>`;
+  }
+}
+
+async function openAdminDashboardModal() {
+  if (!currentUserProfile || !currentUserProfile.is_admin) {
+    showToast("Access restricted: Administrator authorization required.", "error");
+    return;
+  }
+
+  const modal = document.getElementById("adminDashboardModal");
+  modal.classList.remove("hidden");
+
+  try {
+    const res = await fetch("/api/admin/overview", {
+      headers: { "Authorization": `Bearer ${authToken}` }
+    });
+    if (res.ok) {
+      const ov = await res.json();
+      document.getElementById("admTotalUsers").innerText = ov.total_users;
+      document.getElementById("admJobsToday").innerText = ov.active_jobs_today;
+      document.getElementById("admTotalLeads").innerText = ov.total_leads_scraped.toLocaleString();
+      document.getElementById("admRevenue").innerText = `${ov.total_revenue_bdt.toLocaleString()} BDT`;
+    }
+  } catch (err) {
+    console.error("Admin overview fetch error:", err);
+  }
+
+  switchAdminTab("users");
+}
+
+function closeAdminDashboardModal() {
+  const modal = document.getElementById("adminDashboardModal");
+  if (modal) modal.classList.add("hidden");
+}
+
+function switchAdminTab(tab) {
+  const tabUsers = document.getElementById("admTabUsers");
+  const tabJobs = document.getElementById("admTabJobs");
+  const tabPayments = document.getElementById("admTabPayments");
+  const tabReviews = document.getElementById("admTabReviews");
+  const usersView = document.getElementById("admUsersView");
+  const jobsView = document.getElementById("admJobsView");
+  const paymentsView = document.getElementById("admPaymentsView");
+  const reviewsView = document.getElementById("admReviewsView");
+
+  const inactiveBtn = "flex-1 py-1.5 rounded-md font-semibold text-secondary hover:text-on-surface transition-all";
+  const activeBtn = "flex-1 py-1.5 rounded-md font-semibold text-primary bg-surface-container-lowest shadow-sm transition-all";
+
+  if (tabUsers) tabUsers.className = tab === "users" ? activeBtn : inactiveBtn;
+  if (tabJobs) tabJobs.className = tab === "jobs" ? activeBtn : inactiveBtn;
+  if (tabPayments) tabPayments.className = tab === "payments" ? activeBtn : inactiveBtn;
+  if (tabReviews) tabReviews.className = tab === "reviews" ? activeBtn : inactiveBtn;
+
+  if (usersView) usersView.classList.toggle("hidden", tab !== "users");
+  if (jobsView) jobsView.classList.toggle("hidden", tab !== "jobs");
+  if (paymentsView) paymentsView.classList.toggle("hidden", tab !== "payments");
+  if (reviewsView) reviewsView.classList.toggle("hidden", tab !== "reviews");
+
+  if (tab === "users") {
+    loadAdminUsers();
+  } else if (tab === "jobs") {
+    loadAdminJobs();
+  } else if (tab === "payments") {
+    loadAdminPayments();
+  } else if (tab === "reviews") {
+    loadAdminReviews();
+  }
+}
+
+async function loadAdminUsers() {
+  const tbody = document.getElementById("admUsersTableBody");
+  if (!tbody) return;
+  tbody.innerHTML = `<tr><td colspan="5" class="px-3.5 py-4 text-center text-secondary">Loading registered users...</td></tr>`;
+
+  try {
+    const res = await fetch("/api/admin/users", {
+      headers: { "Authorization": `Bearer ${authToken}` }
+    });
+    if (res.ok) {
+      const data = await res.json();
+      const users = Array.isArray(data) ? data : (data.users || []);
+      if (!users || users.length === 0) {
+        tbody.innerHTML = `<tr><td colspan="5" class="px-3.5 py-4 text-center text-secondary">No users found.</td></tr>`;
+        return;
+      }
+
+      tbody.innerHTML = users.map(u => {
+        const isCurrentAdmin = u.role === "admin";
+        const isPro = u.plan_id === "pro";
+        return `
+          <tr class="hover:bg-surface-container/60 transition-colors">
+            <td class="px-3.5 py-2.5 font-medium text-on-surface">${escapeHtml(u.email)}</td>
+            <td class="px-3.5 py-2.5 text-secondary">${escapeHtml(u.full_name || 'N/A')}</td>
+            <td class="px-3.5 py-2.5">
+              <span class="px-2 py-0.5 rounded text-[10px] font-bold uppercase ${isCurrentAdmin ? 'bg-amber-100 text-amber-900 border border-amber-300' : 'bg-surface-container text-secondary'}">${u.role}</span>
+            </td>
+            <td class="px-3.5 py-2.5">
+              <span class="px-2 py-0.5 rounded text-[10px] font-bold uppercase ${isPro ? 'bg-primary-fixed text-primary' : 'bg-surface-container text-secondary'}">${u.plan_id}</span>
+            </td>
+            <td class="px-3.5 py-2.5 flex items-center gap-1.5 whitespace-nowrap">
+              <button type="button" class="px-2 py-1 rounded text-[10px] font-semibold bg-surface-container hover:bg-surface-container-high text-on-surface transition-colors" onclick="changeUserPlan('${u.id}', '${isPro ? 'free' : 'pro'}')">
+                ${isPro ? 'Set Free' : 'Promote Pro'}
+              </button>
+              <button type="button" class="px-2 py-1 rounded text-[10px] font-semibold ${isCurrentAdmin ? 'bg-red-50 text-red-700 hover:bg-red-100' : 'bg-amber-50 text-amber-800 hover:bg-amber-100'} transition-colors" onclick="changeUserRole('${u.id}', '${isCurrentAdmin ? 'user' : 'admin'}')">
+                ${isCurrentAdmin ? 'Demote' : 'Make Admin'}
+              </button>
+            </td>
+          </tr>
+        `;
+      }).join("");
+    }
+  } catch (err) {
+    tbody.innerHTML = `<tr><td colspan="5" class="px-3.5 py-4 text-center text-error">${escapeHtml(err.message)}</td></tr>`;
+  }
+}
+
+async function changeUserPlan(userId, newPlan) {
+  try {
+    const res = await fetch(`/api/admin/users/${userId}`, {
+      method: "PATCH",
+      headers: {
+        "Content-Type": "application/json",
+        "Authorization": `Bearer ${authToken}`
+      },
+      body: JSON.stringify({ plan_id: newPlan })
+    });
+    if (res.ok) {
+      showToast(`User plan updated to ${newPlan.toUpperCase()}!`, "success");
+      loadAdminUsers();
+    } else {
+      const err = await res.json();
+      showToast(err.detail || "Failed to update plan", "error");
+    }
+  } catch (err) {
+    showToast(err.message, "error");
+  }
+}
+
+async function changeUserRole(userId, newRole) {
+  try {
+    const res = await fetch(`/api/admin/users/${userId}`, {
+      method: "PATCH",
+      headers: {
+        "Content-Type": "application/json",
+        "Authorization": `Bearer ${authToken}`
+      },
+      body: JSON.stringify({ role: newRole })
+    });
+    if (res.ok) {
+      showToast(`User role updated to ${newRole.toUpperCase()}!`, "success");
+      loadAdminUsers();
+    } else {
+      const err = await res.json();
+      showToast(err.detail || "Failed to update role", "error");
+    }
+  } catch (err) {
+    showToast(err.message, "error");
+  }
+}
+
+async function loadAdminJobs() {
+  const tbody = document.getElementById("admJobsTableBody");
+  if (!tbody) return;
+  tbody.innerHTML = `<tr><td colspan="6" class="px-3.5 py-4 text-center text-secondary">Loading platform jobs...</td></tr>`;
+
+  try {
+    const res = await fetch("/api/admin/jobs", {
+      headers: { "Authorization": `Bearer ${authToken}` }
+    });
+    if (res.ok) {
+      const data = await res.json();
+      const jobs = Array.isArray(data) ? data : (data.jobs || []);
+      if (!jobs || jobs.length === 0) {
+        tbody.innerHTML = `<tr><td colspan="6" class="px-3.5 py-4 text-center text-secondary">No platform jobs found.</td></tr>`;
+        return;
+      }
+
+      tbody.innerHTML = jobs.map(j => {
+        let statusBadge = `<span class="px-2 py-0.5 rounded text-[10px] font-semibold bg-emerald-100 text-emerald-800">${j.status.toUpperCase()}</span>`;
+        if (j.status === "failed") {
+          statusBadge = `<span class="px-2 py-0.5 rounded text-[10px] font-semibold bg-red-100 text-red-800">FAILED</span>`;
+        } else if (j.status === "running") {
+          statusBadge = `<span class="px-2 py-0.5 rounded text-[10px] font-semibold bg-primary-fixed text-primary">RUNNING</span>`;
+        }
+
+        return `
+          <tr class="hover:bg-surface-container/60 transition-colors">
+            <td class="px-3.5 py-2.5 font-mono text-[10px] text-secondary">${j.job_id.slice(0, 8)}...</td>
+            <td class="px-3.5 py-2.5 text-secondary truncate max-w-[120px]">${escapeHtml(j.user_email || 'Anonymous')}</td>
+            <td class="px-3.5 py-2.5 text-on-surface truncate max-w-[180px]" title="${escapeHtml(j.prompt)}">${escapeHtml(j.prompt)}</td>
+            <td class="px-3.5 py-2.5">${statusBadge}</td>
+            <td class="px-3.5 py-2.5 font-mono text-xs">${j.leads_scraped} / ${j.target_leads}</td>
+            <td class="px-3.5 py-2.5 text-error text-[11px] truncate max-w-[150px]">${escapeHtml(j.error_message || 'None')}</td>
+          </tr>
+        `;
+      }).join("");
+    }
+  } catch (err) {
+    tbody.innerHTML = `<tr><td colspan="6" class="px-3.5 py-4 text-center text-error">${escapeHtml(err.message)}</td></tr>`;
+  }
+}
+
+async function loadAdminPayments() {
+  const tbody = document.getElementById("admPaymentsTableBody");
+  if (!tbody) return;
+  tbody.innerHTML = `<tr><td colspan="6" class="px-3.5 py-4 text-center text-secondary">Loading payment transactions...</td></tr>`;
+
+  try {
+    const res = await fetch("/api/admin/payments", {
+      headers: { "Authorization": `Bearer ${authToken}` }
+    });
+    if (res.ok) {
+      const data = await res.json();
+      const pmts = Array.isArray(data) ? data : (data.payments || []);
+      if (!pmts || pmts.length === 0) {
+        tbody.innerHTML = `<tr><td colspan="6" class="px-3.5 py-4 text-center text-secondary">No payment transactions recorded yet.</td></tr>`;
+        return;
+      }
+
+      tbody.innerHTML = pmts.map(p => {
+        const isSuccess = p.status === "completed";
+        return `
+          <tr class="hover:bg-surface-container/60 transition-colors">
+            <td class="px-3.5 py-2.5 font-mono text-[10px] text-primary">${p.transaction_id || p.id.slice(0, 8)}</td>
+            <td class="px-3.5 py-2.5 text-secondary">${escapeHtml(p.user_email || 'User')}</td>
+            <td class="px-3.5 py-2.5 font-bold uppercase text-xs">${p.plan_id}</td>
+            <td class="px-3.5 py-2.5 font-mono font-semibold">${p.amount} ${p.currency}</td>
+            <td class="px-3.5 py-2.5 uppercase text-[10px] font-semibold text-secondary">${p.provider || p.payment_provider}</td>
+            <td class="px-3.5 py-2.5">
+              <span class="px-2 py-0.5 rounded text-[10px] font-semibold ${isSuccess ? 'bg-emerald-100 text-emerald-800' : 'bg-amber-100 text-amber-800'}">${p.status.toUpperCase()}</span>
+            </td>
+          </tr>
+        `;
+      }).join("");
+    }
+  } catch (err) {
+    tbody.innerHTML = `<tr><td colspan="6" class="px-3.5 py-4 text-center text-error">${escapeHtml(err.message)}</td></tr>`;
+  }
+}
+
+async function loadAdminReviews() {
+  const tbody = document.getElementById("admReviewsTableBody");
+  if (!tbody) return;
+  tbody.innerHTML = `<tr><td colspan="6" class="px-3.5 py-4 text-center text-secondary">Loading feedback &amp; reports...</td></tr>`;
+
+  try {
+    const res = await fetch("/api/admin/reviews", {
+      headers: { "Authorization": `Bearer ${authToken}` }
+    });
+    if (res.ok) {
+      const data = await res.json();
+      const reviews = Array.isArray(data) ? data : (data.reviews || []);
+      if (!reviews || reviews.length === 0) {
+        tbody.innerHTML = `<tr><td colspan="6" class="px-3.5 py-6 text-center text-secondary">
+          <div class="flex flex-col items-center justify-center gap-1.5">
+            <span class="material-symbols-outlined text-[28px] text-secondary/60">rate_review</span>
+            <p class="font-medium text-xs">No user feedback submitted yet.</p>
+          </div>
+        </td></tr>`;
+        return;
+      }
+
+      tbody.innerHTML = reviews.map(r => {
+        const rating = Number(r.rating) || 5;
+        const isIssue = rating <= 2;
+        const isModerate = rating === 3;
+        
+        let starsHtml = "";
+        for (let i = 1; i <= 5; i++) {
+          starsHtml += `<span class="material-symbols-outlined text-[14px] ${i <= rating ? 'text-amber-500 fill-1' : 'text-slate-300'}">star</span>`;
+        }
+
+        let ratingBadge = "";
+        if (isIssue) {
+          ratingBadge = `<span class="inline-flex items-center gap-1 px-2 py-0.5 rounded text-[10px] font-bold uppercase bg-red-100 text-red-800 border border-red-300"><span class="w-1.5 h-1.5 rounded-full bg-red-600"></span>Issue (${rating}★)</span>`;
+        } else if (isModerate) {
+          ratingBadge = `<span class="inline-flex items-center gap-1 px-2 py-0.5 rounded text-[10px] font-bold uppercase bg-amber-100 text-amber-800 border border-amber-300"><span class="w-1.5 h-1.5 rounded-full bg-amber-600"></span>Neutral (${rating}★)</span>`;
+        } else {
+          ratingBadge = `<span class="inline-flex items-center gap-1 px-2 py-0.5 rounded text-[10px] font-bold uppercase bg-emerald-100 text-emerald-800 border border-emerald-300"><span class="w-1.5 h-1.5 rounded-full bg-emerald-600"></span>Good (${rating}★)</span>`;
+        }
+
+        let formattedDate = "Recent";
+        if (r.created_at) {
+          try {
+            const d = new Date(r.created_at);
+            formattedDate = `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')} ${String(d.getHours()).padStart(2,'0')}:${String(d.getMinutes()).padStart(2,'0')}`;
+          } catch (_) {}
+        }
+
+        const userEmailDisplay = r.user_email 
+          ? `<span class="font-medium text-on-surface">${escapeHtml(r.user_email)}</span>`
+          : `<span class="px-1.5 py-0.5 rounded text-[10px] font-mono bg-surface-container text-secondary">Anonymous Guest</span>`;
+
+        const wantsPaidBadge = r.wants_paid_version
+          ? `<span class="px-2 py-0.5 rounded text-[10px] font-bold bg-primary-fixed text-primary">Interested in Pro</span>`
+          : `<span class="px-2 py-0.5 rounded text-[10px] text-secondary">Free only</span>`;
+
+        return `
+          <tr class="hover:bg-surface-container/60 transition-colors ${isIssue ? 'bg-red-50/20' : ''}">
+            <td class="px-3.5 py-2.5 font-mono text-[10px] text-secondary whitespace-nowrap">${formattedDate}</td>
+            <td class="px-3.5 py-2.5 whitespace-nowrap">${userEmailDisplay}</td>
+            <td class="px-3.5 py-2.5 whitespace-nowrap">
+              <div class="flex flex-col gap-0.5">
+                <div class="flex items-center">${starsHtml}</div>
+                <div>${ratingBadge}</div>
+              </div>
+            </td>
+            <td class="px-3.5 py-2.5 text-xs text-on-surface max-w-[340px] break-words">
+              <div class="p-2 rounded bg-surface-container/40 border ${isIssue ? 'border-red-200 bg-red-50/40 text-red-950 font-medium' : 'border-surface-container-high/40'} leading-relaxed font-body">
+                ${escapeHtml(r.comment || 'No comment provided')}
+              </div>
+            </td>
+            <td class="px-3.5 py-2.5 whitespace-nowrap">${wantsPaidBadge}</td>
+            <td class="px-3.5 py-2.5 whitespace-nowrap">
+              <button type="button" class="px-2 py-1 rounded text-[10px] font-semibold bg-red-50 hover:bg-red-100 text-red-700 transition-colors flex items-center gap-1" onclick="deleteAdminReview(${r.id})">
+                <span class="material-symbols-outlined text-[13px]">delete</span> Delete
+              </button>
+            </td>
+          </tr>
+        `;
+      }).join("");
+    } else {
+      tbody.innerHTML = `<tr><td colspan="6" class="px-3.5 py-4 text-center text-error">Failed to fetch feedback list.</td></tr>`;
+    }
+  } catch (err) {
+    tbody.innerHTML = `<tr><td colspan="6" class="px-3.5 py-4 text-center text-error">${escapeHtml(err.message)}</td></tr>`;
+  }
+}
+
+async function deleteAdminReview(reviewId) {
+  if (!confirm(`Are you sure you want to delete review #${reviewId}?`)) return;
+
+  try {
+    const res = await fetch(`/api/admin/reviews/${reviewId}`, {
+      method: "DELETE",
+      headers: { "Authorization": `Bearer ${authToken}` }
+    });
+    if (res.ok) {
+      showToast(`Review #${reviewId} deleted.`, "success");
+      loadAdminReviews();
+    } else {
+      const err = await res.json();
+      showToast(err.detail || "Failed to delete review", "error");
+    }
+  } catch (err) {
+    showToast(err.message, "error");
+  }
+}
+
+async function triggerPlanUpgrade(planId) {
+  if (!authToken) {
+    showToast("Please sign in or create an account before upgrading.", "info");
+    openAuthModal();
+    return;
+  }
+
+  showToast(`Initiating checkout intent for ${planId.toUpperCase()} Harvester Tier...`, "info");
+
+  try {
+    const res = await fetch("/api/payments/create-intent", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "Authorization": `Bearer ${authToken}`
+      },
+      body: JSON.stringify({
+        plan_id: planId,
+        provider: "sslcommerz"
+      })
+    });
+
+    if (!res.ok) {
+      const err = await res.json();
+      showToast(err.detail || "Failed to create payment intent", "error");
+      return;
+    }
+
+    const intent = await res.json();
+    const txnId = intent.transaction_id || intent.intent_id;
+    appendTerminalLog(`[PAYMENT/INTENT] Created checkout intent #${txnId} for ${intent.amount} BDT via ${intent.provider}.`);
+
+    const confirmPayment = confirm(
+      `[Checkout Gateway Simulation]\n\nPlan: Pro Harvester (${intent.amount} BDT / Month)\nProvider: ${intent.provider.toUpperCase()}\nTransaction ID: ${txnId}\n\nWould you like to simulate verified webhook confirmation to activate this plan immediately?`
+    );
+
+    if (confirmPayment) {
+      appendTerminalLog(`[WEBHOOK] Dispatching verified test webhook to /api/payments/webhook/${intent.provider}...`);
+      const hookRes = await fetch(`/api/payments/webhook/${intent.provider}`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          transaction_id: txnId,
+          status: "completed",
+        })
+      });
+
+      if (hookRes.ok) {
+        showToast("🎉 Payment confirmed via webhook! Your Pro Plan is now active.", "success");
+        appendTerminalLog(`[WEBHOOK/SUCCESS] Account upgraded to PRO tier. Daily limit: 10,000 leads, 50 jobs/day.`);
+        await fetchUserProfile();
+        await openUserDashboardModal();
+      } else {
+        const hookErr = await hookRes.json();
+        showToast("Webhook verification failed: " + (hookErr.detail || "Error"), "error");
+      }
+    }
+  } catch (err) {
+    showToast("Payment error: " + err.message, "error");
+  }
 }
 
 

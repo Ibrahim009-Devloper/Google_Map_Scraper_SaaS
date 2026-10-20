@@ -122,9 +122,15 @@
           <a href="#terminal" class="nav-item flex items-center gap-3 px-3.5 py-2.5 rounded-lg text-sm text-on-surface-variant hover:bg-surface-container hover:text-on-surface transition-all" data-target="terminal">
             <span class="material-symbols-outlined text-[20px]">terminal</span>Engine Logs
           </a>
-          <a href="#feedback" class="nav-item flex items-center gap-3 px-3.5 py-2.5 rounded-lg text-sm text-on-surface-variant hover:bg-surface-container hover:text-on-surface transition-all" data-target="feedback">
-            <span class="material-symbols-outlined text-[20px]">rate_review</span>Feedback & Reviews
-          </a>
+          <button type="button" id="userDashboardNavLink" class="hidden nav-item w-full flex items-center gap-3 px-3.5 py-2.5 rounded-lg text-sm text-on-surface-variant hover:bg-surface-container hover:text-on-surface transition-all text-left" onclick="openUserDashboardModal()">
+            <span class="material-symbols-outlined text-[20px] text-primary">account_box</span>My Plan &amp; Usage
+          </button>
+          <button type="button" id="adminDashboardNavLink" class="hidden nav-item w-full flex items-center gap-3 px-3.5 py-2.5 rounded-lg text-sm text-amber-800 bg-amber-50 hover:bg-amber-100 hover:text-amber-950 font-semibold transition-all text-left" onclick="openAdminDashboardModal()">
+            <span class="material-symbols-outlined text-[20px] text-amber-600">admin_panel_settings</span>Admin Center
+          </button>
+          <button type="button" class="nav-item w-full flex items-center gap-3 px-3.5 py-2.5 rounded-lg text-sm text-amber-900 bg-amber-50/70 hover:bg-amber-100 hover:text-amber-950 font-semibold transition-all text-left" onclick="openProblemCenterModal()">
+            <span class="material-symbols-outlined text-[20px] text-amber-600">support_agent</span>Problem Center
+          </button>
         </nav>
       </div>
     </div>
@@ -167,9 +173,8 @@
         <!-- Free Anonymous Quota Pill -->
         <div class="flex items-center gap-1.5 px-3 py-1.5 rounded-full bg-surface-container-low border border-surface-container-high text-xs font-label" id="quotaBadge">
           <span class="material-symbols-outlined text-[15px] text-tertiary">workspace_premium</span>
-          <span class="text-secondary">Free Leads:</span>
-          <strong class="font-semibold text-primary" id="quotaText">0 / 1,000</strong>
-          <button type="button" class="ml-1 text-secondary/60 hover:text-primary transition-colors text-[10px] font-mono hover:underline" title="Reset anonymous quota for local dev" onclick="resetDevQuota()">[reset]</button>
+          <span class="text-secondary" id="quotaLabel">Guest Quota:</span>
+          <strong class="font-semibold text-primary" id="quotaText">0 / 100 (1 Job)</strong>
         </div>
 
         <!-- Sync Button -->
@@ -177,18 +182,41 @@
           <span class="material-symbols-outlined text-[16px]">sync</span>Sync
         </button>
 
-        <!-- Feedback & Help Button -->
-        <button type="button" class="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-label uppercase tracking-wider text-on-surface-variant hover:bg-surface-container hover:text-primary transition-colors" onclick="scrollToFeedback()">
-          <span class="material-symbols-outlined text-[16px] text-tertiary">rate_review</span>Feedback & Help
+        <!-- Problem Center Button -->
+        <button type="button" class="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-label uppercase tracking-wider text-amber-900 bg-amber-100/80 hover:bg-amber-100 border border-amber-200/80 font-semibold shadow-sm transition-all" onclick="openProblemCenterModal()">
+          <span class="material-symbols-outlined text-[16px] text-amber-700">support_agent</span>Problem Center
         </button>
 
         <div class="h-4 w-px bg-surface-container-high"></div>
 
-        <!-- Google Auth / Profile Button -->
-        <button type="button" class="flex items-center gap-2 px-3 py-1.5 rounded-full bg-primary-fixed hover:bg-primary-fixed-dim text-on-primary-fixed transition-all text-xs font-label font-semibold shadow-sm" id="authBtn" onclick="openAuthModal()">
-          <span class="material-symbols-outlined text-[18px]">account_circle</span>
-          <span id="authBtnLabel">Google Sign In</span>
-        </button>
+        <!-- User Profile & Auth Trigger -->
+        <div class="relative inline-block text-left" id="userProfileDropdownContainer">
+          <button type="button" class="flex items-center gap-2 px-3.5 py-1.5 rounded-full bg-primary-fixed hover:bg-primary-fixed-dim text-on-primary-fixed transition-all text-xs font-label font-semibold shadow-sm" id="authBtn" onclick="handleAuthButtonClick()">
+            <span class="material-symbols-outlined text-[18px]">account_circle</span>
+            <span id="authBtnLabel">Sign In / Register</span>
+          </button>
+          
+          <!-- Dropdown Menu for Logged In Users -->
+          <div id="userMenuDropdown" class="hidden absolute right-0 mt-2 w-56 rounded-xl bg-surface-container-lowest shadow-xl border border-surface-container-high py-2 z-50">
+            <div class="px-4 py-2 border-b border-surface-container-high/40">
+              <p class="text-xs font-semibold text-on-surface truncate" id="userMenuEmail">user@example.com</p>
+              <div class="flex items-center gap-1.5 mt-1">
+                <span class="px-2 py-0.5 rounded text-[10px] font-bold font-label uppercase bg-primary-fixed text-primary" id="userMenuPlan">Free Plan</span>
+                <span class="text-[10px] text-secondary font-mono" id="userMenuRole">Role: User</span>
+              </div>
+            </div>
+            <button type="button" class="w-full text-left px-4 py-2 text-xs font-body hover:bg-surface-container text-on-surface flex items-center gap-2 transition-colors" onclick="openUserDashboardModal()">
+              <span class="material-symbols-outlined text-[16px] text-primary">dashboard</span> My Plan &amp; Usage
+            </button>
+            <button type="button" id="adminMenuOption" class="hidden w-full text-left px-4 py-2 text-xs font-body hover:bg-amber-50 text-amber-800 flex items-center gap-2 font-semibold transition-colors" onclick="openAdminDashboardModal()">
+              <span class="material-symbols-outlined text-[16px] text-amber-600">admin_panel_settings</span> Admin Dashboard
+            </button>
+            <div class="border-t border-surface-container-high/40 my-1"></div>
+            <button type="button" class="w-full text-left px-4 py-2 text-xs font-body hover:bg-surface-container text-error flex items-center gap-2 transition-colors" onclick="signOutUser()">
+              <span class="material-symbols-outlined text-[16px]">logout</span> Sign Out
+            </button>
+          </div>
+        </div>
       </div>
     </header>
 
@@ -281,20 +309,13 @@
             <!-- Quick Chips & Action Controls Row -->
             <div class="flex flex-col lg:flex-row lg:items-center justify-between gap-4 pt-2 border-t border-surface-container-high/30">
               <!-- Configuration quick chips -->
-              <div class="flex flex-wrap items-center gap-2">
+              <div class="flex flex-wrap items-center gap-2.5">
                 <span class="font-label text-[11px] uppercase tracking-wider text-secondary mr-1">Tuning:</span>
 
-                <!-- AI Planner Select Chip -->
-                <div class="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-surface-container text-xs font-label text-on-surface">
-                  <span class="material-symbols-outlined text-[15px] text-primary">smart_toy</span>
-                  <span>AI:</span>
-                  <select id="providerSelect" class="bg-transparent text-primary font-semibold focus:outline-none cursor-pointer">
-                    <option value="groq" selected>Groq (Llama 3.3 70B - Ultra Fast)</option>
-                    <option value="gemini">Google Gemini 2.5 Flash</option>
-                  </select>
-                </div>
+                <!-- Hidden Provider Select (Defaults to Gemini) -->
+                <input type="hidden" id="providerSelect" value="gemini" />
 
-                <!-- Target Quota Chip -->
+                <!-- Target Quota Chip with Custom Option -->
                 <div class="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-surface-container text-xs font-label text-on-surface">
                   <span class="material-symbols-outlined text-[15px] text-secondary">filter_list</span>
                   <span>Target:</span>
@@ -304,14 +325,19 @@
                     <option value="250">250 Leads</option>
                     <option value="500">500 Leads</option>
                     <option value="1000">1,000 Leads (Max Free)</option>
+                    <option value="custom">Custom...</option>
                   </select>
+                  <input type="number" id="customTargetInput" min="1" max="10000" placeholder="Qty (e.g. 75)" class="hidden w-24 px-2 py-0.5 text-xs rounded bg-surface-container-lowest text-on-surface font-semibold border border-primary/40 focus:outline-none focus:ring-1 focus:ring-primary ml-1" />
                 </div>
 
-                <!-- Engine Protocol Chip -->
-                <div class="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-surface-container text-xs font-label text-on-surface">
-                  <span class="material-symbols-outlined text-[15px] text-tertiary">speed</span>
-                  <span>Engine: <strong class="text-tertiary font-semibold">curl_cffi chrome124</strong></span>
-                </div>
+                <!-- Website Scraping Toggle Chip (Default Off: Only Google Maps) -->
+                <label class="inline-flex items-center gap-2 px-3 py-1.5 rounded-lg bg-surface-container hover:bg-surface-container-high transition-colors text-xs font-label text-on-surface cursor-pointer select-none border border-transparent hover:border-surface-container-highest" title="Check this to scrape external websites for emails and socials. Unchecked scrapes Google Maps only.">
+                  <input type="checkbox" id="scrapeWebsitesToggle" class="w-3.5 h-3.5 text-primary rounded border-outline-variant focus:ring-primary focus:ring-1 cursor-pointer">
+                  <span class="flex items-center gap-1 font-medium">
+                    <span class="material-symbols-outlined text-[15px] text-secondary">language</span>
+                    <span>Scrape Websites (Emails &amp; Socials)</span>
+                  </span>
+                </label>
               </div>
 
               <!-- Start / Stop Action Buttons -->
@@ -499,8 +525,8 @@
                   <span class="font-semibold text-on-surface truncate max-w-[180px]" id="hubCurrentArea">--</span>
                 </div>
                 <div class="flex items-center justify-between text-xs">
-                  <span class="text-secondary">Zero-Browser Transport:</span>
-                  <span class="font-semibold text-tertiary">curl_cffi TLS JA3</span>
+                  <span class="text-secondary">Pipeline Transport:</span>
+                  <span class="font-semibold text-tertiary">High-Speed Direct HTTP</span>
                 </div>
                 <div class="flex items-center justify-between text-xs">
                   <span class="text-secondary">Local WAL Mode Cache:</span>
@@ -576,7 +602,7 @@
                   <button type="button" id="submitFeedbackBtn" class="w-full flex items-center justify-center gap-2 px-4 py-2 rounded-lg bg-primary text-on-primary text-xs font-label uppercase tracking-wider font-semibold shadow-sm hover:bg-primary/90 transition-all" onclick="submitReviewFeedback()">
                     <span class="material-symbols-outlined text-[16px]">send</span>Submit Feedback &amp; Review
                   </button>
-                  <p class="text-[10px] text-center font-body text-secondary mt-2" id="feedbackStatusNotice">Directly synced to Supabase feedback registry.</p>
+                  <p class="text-[10px] text-center font-body text-secondary mt-2" id="feedbackStatusNotice">Directly synced to cloud feedback registry.</p>
                 </div>
               </div>
             </div>
@@ -616,48 +642,474 @@
     </main>
   </div>
 
-  <!-- Modal: Google Sign-In & Supabase Cloud Sync -->
-  <div id="authModal" class="hidden fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm p-4">
-    <div class="bg-surface-container-lowest rounded-2xl max-w-md w-full p-6 shadow-2xl border border-surface-container-high/40 flex flex-col gap-5">
+  <!-- Modal: Supabase Auth (Sign Up, Sign In, Email Verification) -->
+  <div id="authModal" class="hidden fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm p-4 overflow-y-auto">
+    <div class="bg-surface-container-lowest rounded-2xl max-w-md w-full p-6 shadow-2xl border border-surface-container-high/40 flex flex-col gap-5 animate-in fade-in zoom-in duration-200">
+      
+      <!-- Modal Header -->
       <div class="flex items-center justify-between pb-3 border-b border-surface-container-high/30">
-        <div class="flex items-center gap-2">
-          <div class="w-8 h-8 rounded-lg bg-primary-fixed flex items-center justify-center text-primary">
-            <span class="material-symbols-outlined text-[20px]">lock</span>
+        <div class="flex items-center gap-2.5">
+          <div class="w-10 h-10 rounded-xl bg-primary-fixed flex items-center justify-center text-primary shadow-sm">
+            <span class="material-symbols-outlined text-[24px]">shield_person</span>
           </div>
-          <h3 class="font-headline font-bold text-base text-on-surface">Google Account &amp; Cloud Sync</h3>
+          <div>
+            <h3 class="font-headline font-bold text-base text-on-surface leading-tight">LeadPulse Authentication</h3>
+            <span class="font-label text-[11px] text-secondary">Supabase Verified Auth &amp; Cloud Sync</span>
+          </div>
         </div>
-        <button type="button" class="text-secondary hover:text-on-surface p-1 rounded-md" onclick="closeAuthModal()">
+        <button type="button" class="text-secondary hover:text-on-surface p-1 rounded-md transition-colors" onclick="closeAuthModal()">
           <span class="material-symbols-outlined text-[20px]">close</span>
         </button>
       </div>
 
-      <div class="flex flex-col gap-3 text-xs font-body text-secondary leading-relaxed">
-        <p>
-          <strong class="text-on-surface">Anonymous Free Tier:</strong> Scraping without logging in allows up to <strong class="text-primary">1,000 leads</strong> buffered locally in your SQLite session.
-        </p>
-        <p>
-          <strong class="text-on-surface">Verified Google Users:</strong> Sign in with your Google account to unlock permanent cloud storage in Supabase and unlimited lead history.
-        </p>
+      <!-- Plan Comparison Banner -->
+      <div class="grid grid-cols-2 gap-3 text-xs">
+        <div class="p-3 rounded-xl bg-surface-container-low border border-surface-container-high/60 flex flex-col gap-1">
+          <span class="font-label text-[10px] font-semibold uppercase tracking-wider text-secondary">Free Test Plan</span>
+          <span class="font-bold text-on-surface text-sm">1,000 Leads/Day</span>
+          <span class="text-[11px] text-secondary leading-tight">3 jobs/day • 300 leads/job max.</span>
+        </div>
+        <div class="p-3 rounded-xl bg-primary-fixed/30 border border-primary/25 flex flex-col gap-1">
+          <span class="font-label text-[10px] font-semibold uppercase tracking-wider text-primary">Pro Harvester</span>
+          <span class="font-bold text-primary text-sm">10,000 Leads/Day</span>
+          <span class="text-[11px] text-on-surface-variant leading-tight">50 jobs/day • 1,000 leads/job.</span>
+        </div>
       </div>
 
-      <!-- Auth Input or Simulation -->
+      <!-- Tabs: Sign In vs Sign Up -->
+      <div class="flex rounded-lg bg-surface-container p-1 text-xs font-label">
+        <button type="button" id="tabSignInBtn" class="flex-1 py-1.5 rounded-md font-semibold text-primary bg-surface-container-lowest shadow-sm transition-all" onclick="switchAuthTab('signin')">
+          Sign In
+        </button>
+        <button type="button" id="tabSignUpBtn" class="flex-1 py-1.5 rounded-md font-semibold text-secondary hover:text-on-surface transition-all" onclick="switchAuthTab('signup')">
+          Create Account
+        </button>
+      </div>
+
+      <!-- Sign In Form View -->
+      <!-- Sign In Form View -->
+      <form id="signInForm" onsubmit="handleEmailSignIn(event)" autocomplete="off" class="flex flex-col gap-3">
+        <div class="flex flex-col gap-1.5">
+          <label for="signInEmail" class="font-label text-[11px] uppercase tracking-wider text-secondary font-semibold">Email Address</label>
+          <input type="email" id="signInEmail" autocomplete="off" required class="w-full rounded-lg bg-surface-container-low px-3 py-2 text-xs text-on-surface placeholder:text-secondary/50 focus:outline-none focus:ring-1 focus:ring-primary border border-transparent focus:border-primary/30" placeholder="you@domain.com" />
+        </div>
+        <div class="flex flex-col gap-1.5">
+          <label for="signInPassword" class="font-label text-[11px] uppercase tracking-wider text-secondary font-semibold">Password</label>
+          <input type="password" id="signInPassword" autocomplete="new-password" required class="w-full rounded-lg bg-surface-container-low px-3 py-2 text-xs text-on-surface placeholder:text-secondary/50 focus:outline-none focus:ring-1 focus:ring-primary border border-transparent focus:border-primary/30" placeholder="••••••••" />
+        </div>
+        <button type="submit" id="signInSubmitBtn" class="w-full py-2.5 rounded-lg bg-primary hover:bg-primary/95 text-xs font-label uppercase tracking-wider font-semibold text-on-primary transition-colors flex items-center justify-center gap-1.5 shadow-sm mt-1">
+          <span class="material-symbols-outlined text-[16px]">login</span> Sign In
+        </button>
+      </form>
+
+      <!-- Sign Up Form View -->
+      <form id="signUpForm" onsubmit="handleEmailSignUp(event)" autocomplete="off" class="hidden flex flex-col gap-3">
+        <div class="flex flex-col gap-1.5">
+          <label for="signUpName" class="font-label text-[11px] uppercase tracking-wider text-secondary font-semibold">Full Name</label>
+          <input type="text" id="signUpName" autocomplete="off" required class="w-full rounded-lg bg-surface-container-low px-3 py-2 text-xs text-on-surface placeholder:text-secondary/50 focus:outline-none focus:ring-1 focus:ring-primary border border-transparent focus:border-primary/30" placeholder="e.g. Ibrahim Ahmed" />
+        </div>
+        <div class="flex flex-col gap-1.5">
+          <label for="signUpEmail" class="font-label text-[11px] uppercase tracking-wider text-secondary font-semibold">Email Address</label>
+          <input type="email" id="signUpEmail" autocomplete="off" required class="w-full rounded-lg bg-surface-container-low px-3 py-2 text-xs text-on-surface placeholder:text-secondary/50 focus:outline-none focus:ring-1 focus:ring-primary border border-transparent focus:border-primary/30" placeholder="you@domain.com" />
+        </div>
+        <div class="flex flex-col gap-1.5">
+          <label for="signUpPassword" class="font-label text-[11px] uppercase tracking-wider text-secondary font-semibold">Password (min 6 characters)</label>
+          <input type="password" id="signUpPassword" autocomplete="new-password" minlength="6" required class="w-full rounded-lg bg-surface-container-low px-3 py-2 text-xs text-on-surface placeholder:text-secondary/50 focus:outline-none focus:ring-1 focus:ring-primary border border-transparent focus:border-primary/30" placeholder="••••••••" />
+        </div>
+        <button type="submit" id="signUpSubmitBtn" class="w-full py-2.5 rounded-lg bg-gradient-to-r from-primary to-primary-container hover:opacity-95 text-xs font-label uppercase tracking-wider font-semibold text-on-primary transition-colors flex items-center justify-center gap-1.5 shadow-sm mt-1">
+          <span class="material-symbols-outlined text-[16px]">person_add</span> Create Account &amp; Start Scraping
+        </button>
+      </form>
+
+      <!-- Status Alert Box -->
+      <div id="authAlertBox" class="hidden p-3 rounded-lg text-xs font-body leading-relaxed"></div>
+
+      <!-- Divider -->
+      <div class="flex items-center gap-3 my-0.5">
+        <div class="h-px bg-surface-container-high flex-1"></div>
+        <span class="text-[10px] font-label uppercase tracking-wider text-secondary">Or Continue With</span>
+        <div class="h-px bg-surface-container-high flex-1"></div>
+      </div>
+
+      <!-- 1-Click Google OAuth & Dev simulation -->
       <div class="flex flex-col gap-2">
-        <label for="jwtTokenInput" class="font-label text-[11px] uppercase tracking-wider text-secondary font-semibold">
-          Google ID Token / Supabase Access Token
-        </label>
-        <textarea id="jwtTokenInput" rows="2" class="w-full rounded-lg bg-surface-container-low p-2.5 text-xs font-mono text-on-surface placeholder:text-secondary/50 focus:outline-none focus:ring-1 focus:ring-primary resize-none border border-transparent focus:border-primary/30" placeholder="Bearer eyJhbGciOi... (or leave blank to demo authenticate)"></textarea>
-      </div>
-
-      <div class="flex items-center justify-between gap-3 pt-2">
-        <button type="button" class="flex-1 py-2 rounded-lg bg-surface-container hover:bg-surface-container-high text-xs font-label uppercase tracking-wider font-semibold text-secondary transition-colors" onclick="closeAuthModal()">
-          Cancel
+        <button type="button" class="w-full py-2 rounded-lg bg-surface-container hover:bg-surface-container-high border border-surface-container-highest text-xs font-label font-semibold text-on-surface flex items-center justify-center gap-2 transition-colors" onclick="handleGoogleSignIn()">
+          <svg class="w-4 h-4" viewBox="0 0 24 24"><path fill="#4285F4" d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92c-.26 1.37-1.04 2.53-2.21 3.31v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.09z"/><path fill="#34A853" d="M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.77c-.98.66-2.23 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84C3.99 20.53 7.7 23 12 23z"/><path fill="#FBBC05" d="M5.84 14.09c-.22-.66-.35-1.36-.35-2.09s.13-1.43.35-2.09V7.06H2.18C1.43 8.55 1 10.22 1 12s.43 3.45 1.18 4.94l2.85-2.22.81-.63z"/><path fill="#EA4335" d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.06l3.66 2.84c.87-2.6 3.3-4.52 6.16-4.52z"/></svg>
+          Google 1-Click Sign In
         </button>
-        <button type="button" class="flex-1 py-2 rounded-lg bg-primary hover:bg-primary/95 text-xs font-label uppercase tracking-wider font-semibold text-on-primary transition-colors flex items-center justify-center gap-1.5 shadow-sm" onclick="authenticateUser()">
-          <span class="material-symbols-outlined text-[16px]">verified_user</span> Authenticate
+
+        <button type="button" class="w-full py-2 rounded-lg bg-surface-container-low hover:bg-surface-container text-xs font-label font-semibold text-secondary transition-colors" onclick="closeAuthModal()">
+          Continue as Guest (100 Free Leads • 1-Time Trial)
         </button>
       </div>
 
-      <div id="authSyncStatus" class="hidden text-center text-xs font-label text-emerald-600 bg-emerald-50 py-2 rounded-lg"></div>
+    </div>
+  </div>
+
+  <!-- Modal: User Dashboard (Plan, Usage, Job History & Upgrade) -->
+  <div id="userDashboardModal" class="hidden fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm p-4 overflow-y-auto">
+    <div class="bg-surface-container-lowest rounded-2xl max-w-3xl w-full p-6 md:p-8 shadow-2xl border border-surface-container-high/40 flex flex-col gap-6 max-h-[90vh] overflow-y-auto">
+      
+      <!-- Header -->
+      <div class="flex items-center justify-between pb-4 border-b border-surface-container-high/40">
+        <div class="flex items-center gap-3">
+          <div class="w-10 h-10 rounded-xl bg-primary-fixed flex items-center justify-center text-primary shadow-sm">
+            <span class="material-symbols-outlined text-[24px]">account_box</span>
+          </div>
+          <div>
+            <h2 class="font-headline font-bold text-lg text-on-surface">My Plan &amp; Daily Usage</h2>
+            <p class="font-body text-xs text-secondary" id="dashUserEmail">Loading profile...</p>
+          </div>
+        </div>
+        <button type="button" class="text-secondary hover:text-on-surface p-1 rounded-md transition-colors" onclick="closeUserDashboardModal()">
+          <span class="material-symbols-outlined text-[22px]">close</span>
+        </button>
+      </div>
+
+      <!-- Plan & Limits Summary Cards -->
+      <div class="grid grid-cols-1 md:grid-cols-3 gap-4">
+        
+        <!-- Card 1: Active Plan -->
+        <div class="p-4 rounded-xl bg-surface-container-low border border-surface-container-high/50 flex flex-col justify-between">
+          <span class="font-label text-[11px] uppercase tracking-wider text-secondary font-semibold">Active Plan</span>
+          <div class="my-2">
+            <h3 class="font-headline font-bold text-xl text-primary" id="dashPlanName">Free Test Plan</h3>
+            <span class="text-[11px] font-mono text-tertiary font-semibold" id="dashPlanPrice">0.00 BDT / month</span>
+          </div>
+          <span class="text-[11px] text-secondary">Free initial test tier.</span>
+        </div>
+
+        <!-- Card 2: Daily Leads Quota -->
+        <div class="p-4 rounded-xl bg-surface-container-low border border-surface-container-high/50 flex flex-col justify-between">
+          <span class="font-label text-[11px] uppercase tracking-wider text-secondary font-semibold">Leads Scraped Today</span>
+          <div class="my-2">
+            <div class="flex items-baseline gap-1">
+              <span class="font-headline font-bold text-2xl text-on-surface" id="dashLeadsToday">0</span>
+              <span class="text-xs text-secondary font-semibold" id="dashLeadsLimit">/ 1,000</span>
+            </div>
+            <!-- Progress Bar -->
+            <div class="w-full bg-surface-container rounded-full h-2 mt-2 overflow-hidden">
+              <div class="bg-primary h-2 rounded-full transition-all duration-300" id="dashLeadsProgress" style="width: 0%"></div>
+            </div>
+          </div>
+          <span class="text-[11px] text-secondary" id="dashLeadsRemaining">1,000 remaining today</span>
+        </div>
+
+        <!-- Card 3: Daily Jobs Quota -->
+        <div class="p-4 rounded-xl bg-surface-container-low border border-surface-container-high/50 flex flex-col justify-between">
+          <span class="font-label text-[11px] uppercase tracking-wider text-secondary font-semibold">Jobs Dispatched Today</span>
+          <div class="my-2">
+            <div class="flex items-baseline gap-1">
+              <span class="font-headline font-bold text-2xl text-on-surface" id="dashJobsToday">0</span>
+              <span class="text-xs text-secondary font-semibold" id="dashJobsLimit">/ 3 jobs</span>
+            </div>
+            <!-- Progress Bar -->
+            <div class="w-full bg-surface-container rounded-full h-2 mt-2 overflow-hidden">
+              <div class="bg-tertiary h-2 rounded-full transition-all duration-300" id="dashJobsProgress" style="width: 0%"></div>
+            </div>
+          </div>
+          <span class="text-[11px] text-secondary">Max 300 leads per individual job</span>
+        </div>
+
+      </div>
+
+      <!-- Upgrade to Pro Card -->
+      <div class="p-5 rounded-xl bg-gradient-to-r from-primary-fixed/40 via-surface-container-low to-surface-container-low border border-primary/25 flex flex-col md:flex-row md:items-center justify-between gap-4">
+        <div>
+          <span class="px-2 py-0.5 rounded text-[10px] font-bold font-label uppercase bg-primary text-on-primary">Upgrade Option</span>
+          <h4 class="font-headline font-bold text-base text-on-surface mt-1">Unlock Pro Harvester Tier</h4>
+          <p class="text-xs font-body text-secondary mt-0.5">
+            Boost limits to <strong>10,000 leads/day</strong>, <strong>50 jobs/day</strong>, and <strong>1,000 leads/job</strong> with verified webhook confirmation.
+          </p>
+        </div>
+        <button type="button" class="px-5 py-2.5 rounded-lg bg-primary hover:bg-primary/90 text-on-primary text-xs font-label uppercase tracking-wider font-semibold transition-all shadow-sm flex items-center gap-1.5 whitespace-nowrap self-start md:self-auto" onclick="triggerPlanUpgrade('pro')">
+          <span class="material-symbols-outlined text-[16px]">credit_card</span> Upgrade (2,500 BDT)
+        </button>
+      </div>
+
+      <!-- User Job History Section -->
+      <div class="flex flex-col gap-3">
+        <div class="flex items-center justify-between">
+          <h3 class="font-headline font-semibold text-sm text-on-surface flex items-center gap-1.5">
+            <span class="material-symbols-outlined text-[18px] text-primary">history</span> Scraping Job History
+          </h3>
+          <button type="button" class="text-xs font-label text-primary hover:underline flex items-center gap-1" onclick="loadUserJobHistory()">
+            <span class="material-symbols-outlined text-[14px]">refresh</span> Refresh
+          </button>
+        </div>
+
+        <div class="border border-surface-container-high/40 rounded-xl overflow-hidden bg-surface-container-low">
+          <div class="overflow-x-auto max-h-56">
+            <table class="w-full text-left text-xs font-body">
+              <thead class="bg-surface-container font-label uppercase text-[10px] tracking-wider text-secondary border-b border-surface-container-high">
+                <tr>
+                  <th class="px-3.5 py-2.5">Date</th>
+                  <th class="px-3.5 py-2.5">Prompt</th>
+                  <th class="px-3.5 py-2.5">Status</th>
+                  <th class="px-3.5 py-2.5">Harvested</th>
+                  <th class="px-3.5 py-2.5">Action</th>
+                </tr>
+              </thead>
+              <tbody id="userJobsTableBody" class="divide-y divide-surface-container-high/30">
+                <tr><td colspan="5" class="px-3.5 py-4 text-center text-secondary">Loading jobs history...</td></tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+
+    </div>
+  </div>
+
+  <!-- Modal: Admin Dashboard (Users, Platform Jobs, Analytics & Payments) -->
+  <div id="adminDashboardModal" class="hidden fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm p-4 overflow-y-auto">
+    <div class="bg-surface-container-lowest rounded-2xl max-w-5xl w-full p-6 md:p-8 shadow-2xl border border-amber-300/40 flex flex-col gap-6 max-h-[92vh] overflow-y-auto">
+      
+      <!-- Header -->
+      <div class="flex items-center justify-between pb-4 border-b border-surface-container-high/40">
+        <div class="flex items-center gap-3">
+          <div class="w-10 h-10 rounded-xl bg-amber-100 flex items-center justify-center text-amber-700 shadow-sm">
+            <span class="material-symbols-outlined text-[24px]">admin_panel_settings</span>
+          </div>
+          <div>
+            <h2 class="font-headline font-bold text-lg text-on-surface">Admin Command Center</h2>
+            <p class="font-body text-xs text-secondary">Platform oversight, user plans, error audits &amp; payments</p>
+          </div>
+        </div>
+        <button type="button" class="text-secondary hover:text-on-surface p-1 rounded-md transition-colors" onclick="closeAdminDashboardModal()">
+          <span class="material-symbols-outlined text-[22px]">close</span>
+        </button>
+      </div>
+
+      <!-- Admin Overview Metric Pills -->
+      <div class="grid grid-cols-2 md:grid-cols-4 gap-3">
+        <div class="p-3.5 rounded-xl bg-surface-container-low border border-surface-container-high/50 flex flex-col">
+          <span class="text-[10px] font-label font-semibold uppercase text-secondary">Total Users</span>
+          <span class="font-headline font-bold text-xl text-on-surface mt-1" id="admTotalUsers">0</span>
+        </div>
+        <div class="p-3.5 rounded-xl bg-surface-container-low border border-surface-container-high/50 flex flex-col">
+          <span class="text-[10px] font-label font-semibold uppercase text-secondary">Jobs Today</span>
+          <span class="font-headline font-bold text-xl text-primary mt-1" id="admJobsToday">0</span>
+        </div>
+        <div class="p-3.5 rounded-xl bg-surface-container-low border border-surface-container-high/50 flex flex-col">
+          <span class="text-[10px] font-label font-semibold uppercase text-secondary">Total Saved Leads</span>
+          <span class="font-headline font-bold text-xl text-tertiary mt-1" id="admTotalLeads">0</span>
+        </div>
+        <div class="p-3.5 rounded-xl bg-surface-container-low border border-surface-container-high/50 flex flex-col">
+          <span class="text-[10px] font-label font-semibold uppercase text-secondary">Completed Revenue</span>
+          <span class="font-headline font-bold text-xl text-emerald-600 mt-1" id="admRevenue">0 BDT</span>
+        </div>
+      </div>
+
+      <!-- Admin Tabs: Users Management | Platform Jobs | Payments | Feedback & Issues -->
+      <div class="flex rounded-lg bg-surface-container p-1 text-xs font-label">
+        <button type="button" id="admTabUsers" class="flex-1 py-1.5 rounded-md font-semibold text-primary bg-surface-container-lowest shadow-sm" onclick="switchAdminTab('users')">
+          Users &amp; Roles
+        </button>
+        <button type="button" id="admTabJobs" class="flex-1 py-1.5 rounded-md font-semibold text-secondary hover:text-on-surface" onclick="switchAdminTab('jobs')">
+          Platform Jobs &amp; Errors
+        </button>
+        <button type="button" id="admTabPayments" class="flex-1 py-1.5 rounded-md font-semibold text-secondary hover:text-on-surface" onclick="switchAdminTab('payments')">
+          Payments Ledger
+        </button>
+        <button type="button" id="admTabReviews" class="flex-1 py-1.5 rounded-md font-semibold text-secondary hover:text-on-surface flex items-center justify-center gap-1" onclick="switchAdminTab('reviews')">
+          <span class="material-symbols-outlined text-[14px]">reviews</span>
+          User Feedback &amp; Issues
+        </button>
+      </div>
+
+      <!-- Tab View 1: Users Table -->
+      <div id="admUsersView" class="border border-surface-container-high/40 rounded-xl overflow-hidden bg-surface-container-low">
+        <div class="overflow-x-auto max-h-72">
+          <table class="w-full text-left text-xs font-body">
+            <thead class="bg-surface-container font-label uppercase text-[10px] tracking-wider text-secondary border-b border-surface-container-high">
+              <tr>
+                <th class="px-3.5 py-2.5">Email</th>
+                <th class="px-3.5 py-2.5">Name</th>
+                <th class="px-3.5 py-2.5">Role</th>
+                <th class="px-3.5 py-2.5">Plan</th>
+                <th class="px-3.5 py-2.5">Actions</th>
+              </tr>
+            </thead>
+            <tbody id="admUsersTableBody" class="divide-y divide-surface-container-high/30">
+              <tr><td colspan="5" class="px-3.5 py-4 text-center text-secondary">Loading registered users...</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+      <!-- Tab View 2: Jobs Audit Table -->
+      <div id="admJobsView" class="hidden border border-surface-container-high/40 rounded-xl overflow-hidden bg-surface-container-low">
+        <div class="overflow-x-auto max-h-72">
+          <table class="w-full text-left text-xs font-body">
+            <thead class="bg-surface-container font-label uppercase text-[10px] tracking-wider text-secondary border-b border-surface-container-high">
+              <tr>
+                <th class="px-3.5 py-2.5">Job ID</th>
+                <th class="px-3.5 py-2.5">User</th>
+                <th class="px-3.5 py-2.5">Prompt</th>
+                <th class="px-3.5 py-2.5">Status</th>
+                <th class="px-3.5 py-2.5">Leads</th>
+                <th class="px-3.5 py-2.5">Error Note</th>
+              </tr>
+            </thead>
+            <tbody id="admJobsTableBody" class="divide-y divide-surface-container-high/30">
+              <tr><td colspan="6" class="px-3.5 py-4 text-center text-secondary">Loading jobs audit...</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+      <!-- Tab View 3: Payments Ledger -->
+      <div id="admPaymentsView" class="hidden border border-surface-container-high/40 rounded-xl overflow-hidden bg-surface-container-low">
+        <div class="overflow-x-auto max-h-72">
+          <table class="w-full text-left text-xs font-body">
+            <thead class="bg-surface-container font-label uppercase text-[10px] tracking-wider text-secondary border-b border-surface-container-high">
+              <tr>
+                <th class="px-3.5 py-2.5">Txn ID</th>
+                <th class="px-3.5 py-2.5">User</th>
+                <th class="px-3.5 py-2.5">Plan</th>
+                <th class="px-3.5 py-2.5">Amount</th>
+                <th class="px-3.5 py-2.5">Provider</th>
+                <th class="px-3.5 py-2.5">Status</th>
+              </tr>
+            </thead>
+            <tbody id="admPaymentsTableBody" class="divide-y divide-surface-container-high/30">
+              <tr><td colspan="6" class="px-3.5 py-4 text-center text-secondary">Loading payments ledger...</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+      <!-- Tab View 4: User Feedback & Problem Reviews -->
+      <div id="admReviewsView" class="hidden border border-surface-container-high/40 rounded-xl overflow-hidden bg-surface-container-low">
+        <div class="p-3 bg-surface-container/60 border-b border-surface-container-high/40 flex items-center justify-between">
+          <div class="flex items-center gap-2">
+            <span class="material-symbols-outlined text-primary text-[18px]">rate_review</span>
+            <span class="font-headline font-semibold text-xs text-on-surface">User Feedback &amp; Problem Reports</span>
+          </div>
+          <button type="button" onclick="loadAdminReviews()" class="px-2.5 py-1 rounded bg-surface-container hover:bg-surface-container-high text-[11px] font-semibold text-secondary hover:text-on-surface flex items-center gap-1 transition-colors">
+            <span class="material-symbols-outlined text-[14px]">refresh</span> Refresh
+          </button>
+        </div>
+        <div class="overflow-x-auto max-h-80">
+          <table class="w-full text-left text-xs font-body">
+            <thead class="bg-surface-container font-label uppercase text-[10px] tracking-wider text-secondary border-b border-surface-container-high">
+              <tr>
+                <th class="px-3.5 py-2.5">Date</th>
+                <th class="px-3.5 py-2.5">User Email</th>
+                <th class="px-3.5 py-2.5">Rating</th>
+                <th class="px-3.5 py-2.5">Problem / Feedback Message</th>
+                <th class="px-3.5 py-2.5">Interest</th>
+                <th class="px-3.5 py-2.5">Action</th>
+              </tr>
+            </thead>
+            <tbody id="admReviewsTableBody" class="divide-y divide-surface-container-high/30">
+              <tr><td colspan="6" class="px-3.5 py-4 text-center text-secondary">Loading feedback &amp; reports...</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+    </div>
+  </div>
+
+  <!-- Modal: User Problem Center & Community Live Feedback -->
+  <div id="problemCenterModal" class="hidden fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm p-4 overflow-y-auto" onclick="if (event.target === this) closeProblemCenterModal()">
+    <div class="bg-surface-container-lowest rounded-2xl max-w-5xl w-full p-6 md:p-8 shadow-2xl border border-surface-container-high/50 flex flex-col gap-6 max-h-[92vh] overflow-y-auto">
+      
+      <!-- Header -->
+      <div class="flex items-center justify-between pb-4 border-b border-surface-container-high/40">
+        <div class="flex items-center gap-3">
+          <div class="w-10 h-10 rounded-xl bg-amber-100 flex items-center justify-center text-amber-700 shadow-sm">
+            <span class="material-symbols-outlined text-[24px]">support_agent</span>
+          </div>
+          <div>
+            <h2 class="font-headline font-bold text-lg text-on-surface">Community Problem Center &amp; Feedback</h2>
+            <p class="font-body text-xs text-secondary">Report any scraping issues or bugs directly — no email required. View real-time community reports.</p>
+          </div>
+        </div>
+        <button type="button" class="text-secondary hover:text-on-surface p-1 rounded-md transition-colors" onclick="closeProblemCenterModal()">
+          <span class="material-symbols-outlined text-[22px]">close</span>
+        </button>
+      </div>
+
+      <!-- Main Grid: Report Form on Left | Live Feed on Right -->
+      <div class="grid grid-cols-1 lg:grid-cols-12 gap-6 items-start">
+        
+        <!-- Left: Report Problem Form (5 Cols) -->
+        <div class="lg:col-span-5 bg-surface-container-low/70 border border-surface-container-high/50 rounded-2xl p-5 flex flex-col gap-4">
+          <div class="flex items-center gap-2 pb-2 border-b border-surface-container-high/40">
+            <span class="material-symbols-outlined text-amber-600 text-[20px]">report</span>
+            <h3 class="font-headline font-bold text-sm text-on-surface">Report a Problem / Bug</h3>
+          </div>
+
+          <form id="problemReportForm" onsubmit="handleProblemReportSubmit(event)" class="flex flex-col gap-3.5">
+            <!-- Name (No Email Required) -->
+            <div class="flex flex-col gap-1.5">
+              <label for="probReporterName" class="font-label text-[11px] uppercase tracking-wider text-secondary font-semibold flex items-center justify-between">
+                <span>Your Name (Required)</span>
+                <span class="text-[10px] text-emerald-600 font-normal">No email needed</span>
+              </label>
+              <input type="text" id="probReporterName" required placeholder="e.g. Tanvir, Shakil, or Guest User" class="w-full rounded-lg bg-surface-container-lowest px-3 py-2 text-xs text-on-surface placeholder:text-secondary/50 focus:outline-none focus:ring-1 focus:ring-primary border border-surface-container-high" />
+            </div>
+
+            <!-- Severity / Rating Stars -->
+            <div class="flex flex-col gap-1.5">
+              <label class="font-label text-[11px] uppercase tracking-wider text-secondary font-semibold">Issue Severity / Satisfaction</label>
+              <div class="flex items-center gap-1.5" id="probRatingSelector">
+                <button type="button" class="prob-star text-amber-500 hover:scale-110 transition-transform" data-val="1"><span class="material-symbols-outlined text-[24px]">star</span></button>
+                <button type="button" class="prob-star text-amber-500 hover:scale-110 transition-transform" data-val="2"><span class="material-symbols-outlined text-[24px]">star</span></button>
+                <button type="button" class="prob-star text-amber-500 hover:scale-110 transition-transform" data-val="3"><span class="material-symbols-outlined text-[24px]">star</span></button>
+                <button type="button" class="prob-star text-amber-500 hover:scale-110 transition-transform" data-val="4"><span class="material-symbols-outlined text-[24px]">star</span></button>
+                <button type="button" class="prob-star text-amber-500 hover:scale-110 transition-transform" data-val="5"><span class="material-symbols-outlined text-[24px]">star</span></button>
+                <span class="ml-2 font-mono text-xs font-bold text-amber-700" id="probRatingLabel">5 / 5 (Praise &amp; Feedback)</span>
+              </div>
+              <input type="hidden" id="probSelectedRating" value="5" />
+            </div>
+
+            <!-- Problem Description -->
+            <div class="flex flex-col gap-1.5">
+              <label for="probDescription" class="font-label text-[11px] uppercase tracking-wider text-secondary font-semibold">Problem Details / Message</label>
+              <textarea id="probDescription" required rows="4" minlength="5" maxlength="1000" placeholder="Please describe the issue in detail (e.g. 'Scraper stopped at page 3 for Dhanmondi restaurants' or 'Excel download corrupted')..." class="w-full rounded-lg bg-surface-container-lowest p-3 text-xs text-on-surface placeholder:text-secondary/50 focus:outline-none focus:ring-1 focus:ring-primary border border-surface-container-high leading-relaxed"></textarea>
+            </div>
+
+            <!-- Wants Paid Version Interest Checkbox -->
+            <label class="flex items-center gap-2 cursor-pointer text-xs text-secondary hover:text-on-surface select-none">
+              <input type="checkbox" id="probWantsPro" class="rounded text-primary focus:ring-primary" />
+              <span>I am interested in Pro Unlimited Harvester features</span>
+            </label>
+
+            <!-- Submit Button -->
+            <button type="submit" id="probSubmitBtn" class="w-full py-2.5 rounded-lg bg-gradient-to-r from-amber-600 to-amber-700 hover:from-amber-700 hover:to-amber-800 text-white font-label font-semibold text-xs uppercase tracking-wider transition-all flex items-center justify-center gap-2 shadow-sm">
+              <span class="material-symbols-outlined text-[16px]">send</span> Submit Report &amp; Post Live
+            </button>
+          </form>
+        </div>
+
+        <!-- Right: Live Community Feed (7 Cols) -->
+        <div class="lg:col-span-7 flex flex-col gap-3">
+          <div class="flex items-center justify-between pb-2 border-b border-surface-container-high/40">
+            <div class="flex items-center gap-2">
+              <span class="relative flex h-2 w-2">
+                <span class="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-500 opacity-75"></span>
+                <span class="relative inline-flex rounded-full h-2 w-2 bg-emerald-500"></span>
+              </span>
+              <h3 class="font-headline font-bold text-sm text-on-surface">Live Community Feed</h3>
+              <span class="text-[11px] font-mono text-secondary" id="probFeedCount">(0 reports)</span>
+            </div>
+            <button type="button" onclick="loadLiveProblemFeed()" class="px-2.5 py-1 rounded-lg bg-surface-container hover:bg-surface-container-high text-xs font-semibold text-secondary hover:text-on-surface flex items-center gap-1 transition-colors">
+              <span class="material-symbols-outlined text-[15px]">refresh</span> Refresh
+            </button>
+          </div>
+
+          <!-- Feed Container -->
+          <div class="flex flex-col gap-2.5 max-h-[460px] overflow-y-auto pr-1" id="probFeedContainer">
+            <div class="p-8 text-center text-secondary text-xs">Loading live community feed...</div>
+          </div>
+        </div>
+
+      </div>
+
     </div>
   </div>
 
@@ -683,6 +1135,8 @@
   <!-- Toast Notification Container -->
   <div id="toastContainer" class="fixed bottom-6 right-6 z-50 flex flex-col gap-2 pointer-events-none"></div>
 
+  <!-- Supabase JS Client (v2 CDN) -->
+  <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
   <!-- Core Javascript Logic -->
   <script src="/static/js/app.js"></script>
 </body>

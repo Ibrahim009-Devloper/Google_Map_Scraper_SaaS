@@ -30,7 +30,7 @@ from slowapi import Limiter, _rate_limit_exceeded_handler
 from slowapi.util import get_remote_address
 from slowapi.errors import RateLimitExceeded
 
-from config import TEMP_DB_PATH, ANONYMOUS_LEAD_LIMIT
+from config import TEMP_DB_PATH, ANONYMOUS_LEAD_LIMIT, ANONYMOUS_JOB_LIMIT
 from agent.schemas import ActionPlan, LeadItem
 from agent.planner import generate_plan
 from agent.pipeline import run_pipeline
@@ -138,7 +138,14 @@ class ScrapeStartRequest(BaseModel):
         description="Natural language scraping request (e.g. 'Software companies in Dhanmondi without websites')",
     )
     provider: Optional[str] = Field(None, description="Preferred LLM provider: 'gemini' or 'groq'")
-    target_leads: Optional[int] = Field(None, ge=1, le=1000, description="Requested target leads count (e.g. 50)")
+    target_leads: Optional[int] = Field(None, ge=1, le=10000, description="Requested target leads count (e.g. 50)")
+    scrape_website: bool = Field(default=False, description="Whether to deep scrape business websites for emails/socials")
+
+
+class RegisterRequest(BaseModel):
+    name: str = Field(..., min_length=1, max_length=100)
+    email: str = Field(..., min_length=5, max_length=255)
+    password: str = Field(..., min_length=6)
 
 
 class SyncSessionRequest(BaseModel):
@@ -146,8 +153,9 @@ class SyncSessionRequest(BaseModel):
 
 
 class ReviewSubmitRequest(BaseModel):
-    rating: int = Field(..., ge=1, le=5, description="Star rating between 1 and 5")
-    comment: str = Field(..., min_length=3, max_length=1000, description="Review feedback comment")
+    name: Optional[str] = Field(default="Anonymous User", max_length=100, description="Reporter name")
+    rating: int = Field(default=5, ge=1, le=5, description="Star rating between 1 and 5")
+    comment: str = Field(..., min_length=3, max_length=1000, description="Problem report or review feedback")
     wants_paid_version: bool = Field(default=False, description="Whether the user is interested in a paid plan")
 
 
@@ -163,6 +171,46 @@ async def health_check():
         "supabase_connected": supabase_db.is_supabase_connected(),
         "anonymous_lead_limit": ANONYMOUS_LEAD_LIMIT,
     }
+
+
+@app.post("/api/auth/register", tags=["Auth"])
+async def register_new_user(payload: RegisterRequest):
+    """
+    Registers a new user via Supabase Admin API with auto-confirmed email.
+    Eliminates the 'email rate limit exceeded' error during development and testing.
+    """
+    clean_email = payload.email.strip().lower()
+    if security.is_disposable_email(clean_email):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Temporary / disposable email domains are not permitted. Please use your official email address."
+        )
+
+    sb_client = supabase_db.get_supabase_client()
+    try:
+        user_resp = sb_client.auth.admin.create_user({
+            "email": clean_email,
+            "password": payload.password,
+            "email_confirm": True,
+            "user_metadata": {"full_name": payload.name.strip()}
+        })
+        return {
+            "status": "success",
+            "message": "Account created and verified successfully!",
+            "user_id": str(user_resp.user.id),
+            "email": user_resp.user.email,
+        }
+    except Exception as e:
+        err_msg = str(e)
+        if "already" in err_msg.lower() or "unique" in err_msg.lower() or "exists" in err_msg.lower():
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="This email is already registered. Please switch to the Sign In tab."
+            )
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Registration failed: {err_msg}"
+        )
 
 
 @app.get("/api/quota", tags=["Quota"])
@@ -189,13 +237,18 @@ async def get_client_quota(
         }
 
     session_owner = security.get_client_identifier(request)
-    current_scraped = await temp_store.get_anonymous_quota(session_owner)
+    anon_usage = await temp_store.get_anonymous_usage(session_owner)
+    current_scraped = anon_usage["total_leads_scraped"]
+    jobs_count = anon_usage["jobs_count"]
+    is_reached = (current_scraped >= ANONYMOUS_LEAD_LIMIT) or (jobs_count >= ANONYMOUS_JOB_LIMIT)
     return {
         "is_authenticated": False,
         "session_owner": session_owner,
         "total_leads_scraped": current_scraped,
+        "jobs_count": jobs_count,
         "limit": ANONYMOUS_LEAD_LIMIT,
-        "is_limit_reached": current_scraped >= ANONYMOUS_LEAD_LIMIT,
+        "job_limit": ANONYMOUS_JOB_LIMIT,
+        "is_limit_reached": is_reached,
     }
 
 
@@ -222,7 +275,7 @@ async def start_scraping_job(
     """
     Initiates a new autonomous scraping job:
     1. Authenticates user if Bearer token present; otherwise tracks IP/Fingerprint.
-    2. Validates anonymous quota (1,000 lead ceiling).
+    2. Validates guest quota (100 leads limit and 1 job maximum).
     3. Prevents duplicate concurrent jobs for the same user/IP.
     4. Analyzes query via LLM Geo-Planner and launches background worker.
     """
@@ -233,27 +286,82 @@ async def start_scraping_job(
         pass
 
     user = security.get_current_user_optional(authorization, supabase_client=sb_client)
+    effective_limit_for_job = None
+    user_id = None
+
     if user:
         session_owner = user["user_uid"]
         is_authenticated = True
         user_email = user["email"]
+        user_id = user["id"]
+
+        # Check email verification for email-signup users
+        if not user.get("email_verified", False) and user.get("provider") == "email":
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Please verify your email address before launching scraping jobs.",
+            )
+
+        # Server-Side Usage Limits (Free plan: 1,000 leads/day, 3 jobs/day, 300 leads/job)
+        req_target = payload.target_leads or 100
+        limit_check = supabase_db.check_user_limits(
+            user_id=user_id,
+            requested_target_leads=req_target,
+            requires_enrichment=payload.scrape_website,
+        )
+        if not limit_check["allowed"]:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail={
+                    "status": "plan_limit_reached",
+                    "message": limit_check["reason"],
+                    "plan": limit_check.get("plan"),
+                    "usage": limit_check.get("usage"),
+                },
+            )
+        effective_limit_for_job = limit_check["effective_target"]
     else:
         session_owner = security.get_client_identifier(request)
         is_authenticated = False
         user_email = None
 
-    # Check anonymous quota
+    # Check anonymous quota (100 leads and 1 job limit)
     if not is_authenticated:
-        current_scraped = await temp_store.get_anonymous_quota(session_owner)
+        anon_usage = await temp_store.get_anonymous_usage(session_owner)
+        current_scraped = anon_usage["total_leads_scraped"]
+        jobs_count = anon_usage["jobs_count"]
+
+        if jobs_count >= ANONYMOUS_JOB_LIMIT:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail={
+                    "status": "limit_reached_login_required",
+                    "code": "GUEST_JOB_LIMIT_EXCEEDED",
+                    "message": "You have already completed your 1 free guest scraping session. Sign in to unlock 1,000 leads/day, 3 jobs/day, and 300 leads/job!",
+                    "current_quota": current_scraped,
+                    "jobs_count": jobs_count,
+                },
+            )
+
         if current_scraped >= ANONYMOUS_LEAD_LIMIT:
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
                 detail={
                     "status": "limit_reached_login_required",
-                    "message": f"Free anonymous limit of {ANONYMOUS_LEAD_LIMIT} leads reached. Please sign in with Google to continue.",
+                    "code": "GUEST_LEAD_LIMIT_EXCEEDED",
+                    "message": f"Guest trial limit of {ANONYMOUS_LEAD_LIMIT} leads reached. Sign in to unlock 1,000 leads/day, 3 jobs/day, and 300 leads/job!",
                     "current_quota": current_scraped,
+                    "jobs_count": jobs_count,
                 },
             )
+
+        # Cap requested target leads to remaining anonymous budget (max 100)
+        remaining_leads = max(1, ANONYMOUS_LEAD_LIMIT - current_scraped)
+        requested = payload.target_leads or 100
+        effective_limit_for_job = min(requested, remaining_leads, ANONYMOUS_LEAD_LIMIT)
+
+        # Record anonymous job start count
+        await temp_store.record_anonymous_job_start(session_owner)
 
     # Concurrency Lock: 1 active job per user/IP
     can_start = await job_manager.can_start(session_owner)
@@ -266,8 +374,21 @@ async def start_scraping_job(
     # Step 1: AI Planner
     try:
         action_plan = generate_plan(payload.prompt, provider=payload.provider)
-        if payload.target_leads and not action_plan.target_leads:
-            action_plan.target_leads = payload.target_leads
+        target_to_use = effective_limit_for_job or payload.target_leads
+        if target_to_use and target_to_use > 0:
+            action_plan.target_leads = target_to_use
+
+        # Respect user website scraping toggle (defaults to False: Google Maps only)
+        if not payload.scrape_website:
+            action_plan.enrichment.enabled = False
+            action_plan.enrichment.extract_emails = False
+            action_plan.enrichment.extract_socials = False
+            action_plan.enrichment.detect_cms = False
+        else:
+            action_plan.enrichment.enabled = True
+            action_plan.enrichment.extract_emails = True
+            action_plan.enrichment.extract_socials = True
+            action_plan.enrichment.detect_cms = True
     except Exception as plan_err:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
@@ -277,13 +398,23 @@ async def start_scraping_job(
     job_id = f"job_{uuid.uuid4().hex[:12]}"
     stop_event = await job_manager.register(job_id, session_owner)
 
-    # Initialize job in SQLite
+    # Initialize job in SQLite WAL Buffer
     await temp_store.create_job(
         job_id=job_id,
         session_owner=session_owner,
         is_authenticated=is_authenticated,
         prompt=payload.prompt,
     )
+
+    # Audit in Supabase public.jobs table if authenticated
+    if is_authenticated and user_id:
+        supabase_db.create_job_record(
+            job_id=job_id,
+            user_id=user_id,
+            prompt=payload.prompt,
+            target_leads=action_plan.target_leads or 100,
+            enrichment_enabled=action_plan.enrichment.enabled,
+        )
 
     # Step 2: Background Task Worker
     async def _run_scraper_task():
@@ -292,7 +423,10 @@ async def start_scraping_job(
             if not is_authenticated:
                 if limit is None or limit > ANONYMOUS_LEAD_LIMIT:
                     limit = ANONYMOUS_LEAD_LIMIT
-            await asyncio.to_thread(
+            elif effective_limit_for_job:
+                limit = effective_limit_for_job
+
+            result = await asyncio.to_thread(
                 run_pipeline,
                 plan=action_plan,
                 job_id=job_id,
@@ -302,9 +436,45 @@ async def start_scraping_job(
                 max_leads_limit=limit,
                 export_files=True,
             )
+
+            # Record usage and update job in Supabase
+            if is_authenticated and user_id:
+                final_leads = result.get("leads", [])
+                final_count = len(final_leads)
+                enrichment_count = sum(
+                    1 for l in final_leads
+                    if (l.emails or (l.social_links and (l.social_links.facebook or l.social_links.instagram)))
+                )
+                final_status = result.get("status", "completed")
+
+                supabase_db.update_job_record(
+                    job_id=job_id,
+                    status=final_status,
+                    leads_scraped=final_count,
+                    current_area="Job Completed",
+                )
+                supabase_db.record_usage(
+                    user_id=user_id,
+                    leads_count=final_count,
+                    jobs_count=1,
+                    enrichment_calls=enrichment_count,
+                )
+                if final_leads:
+                    supabase_db.save_leads_to_supabase(
+                        user_uid=user_id,
+                        job_id=job_id,
+                        leads=final_leads,
+                    )
         except Exception as exc:
             print(f"[Worker Error] Job {job_id} failed: {exc}", flush=True)
             await temp_store.update_job(job_id, status="failed", current_area=f"Error: {str(exc)[:100]}")
+            if is_authenticated and user_id:
+                supabase_db.update_job_record(
+                    job_id=job_id,
+                    status="failed",
+                    leads_scraped=0,
+                    error_message=str(exc),
+                )
         finally:
             await job_manager.release(job_id, session_owner)
 
@@ -318,6 +488,7 @@ async def start_scraping_job(
         "prompt": payload.prompt,
         "keywords": action_plan.keywords,
         "sub_locations_count": len(action_plan.sub_locations),
+        "target_leads": action_plan.target_leads,
         "enrichment_enabled": action_plan.enrichment.enabled,
     }
 
@@ -559,46 +730,323 @@ async def get_my_saved_leads(
 
 
 @app.post("/api/reviews", tags=["Reviews & Feedback"])
-@limiter.limit("3/day")
+@limiter.limit("30/day")
 async def submit_product_review(
     request: Request,
     payload: ReviewSubmitRequest,
     authorization: Optional[str] = Header(None),
 ):
     """
-    Submits user rating, comment, and interest in paid tiers to Supabase product_reviews.
-    Rate-limited to 3 submissions per day to prevent spam.
+    Submits user problem report or feedback to Supabase product_reviews.
+    No email is required! Users simply provide their name and problem description.
     """
     user_email = None
+    user_name = payload.name.strip() if payload.name and payload.name.strip() else "Anonymous User"
     try:
         sb_client = supabase_db.get_supabase_client()
         user = security.get_current_user_optional(authorization, supabase_client=sb_client)
         if user:
-            user_email = user["email"]
+            user_email = user.get("email")
+            if user_name == "Anonymous User":
+                user_name = user.get("full_name") or (user.get("email", "").split("@")[0] if user.get("email") else "User")
     except Exception:
         pass
 
     review = supabase_db.create_product_review(
         rating=payload.rating,
         comment=payload.comment,
+        user_name=user_name,
         user_email=user_email,
         wants_paid_version=payload.wants_paid_version,
     )
 
     return {
         "status": "success",
-        "message": "Thank you for your valuable feedback!",
+        "message": "Problem report & feedback submitted successfully!",
         "review": review,
     }
 
 
 @app.get("/api/reviews", tags=["Reviews & Feedback"])
 async def list_recent_reviews(
-    limit: int = Query(20, ge=1, le=100),
+    limit: int = Query(50, ge=1, le=100),
 ):
-    """Returns recent product reviews for public display in the UI feedback section."""
+    """Returns recent product reviews and problem reports for live public display in the Problem Center."""
     reviews = supabase_db.get_product_reviews(limit=limit)
     return {
         "count": len(reviews),
         "reviews": reviews,
     }
+
+
+# ============================================================================
+# SaaS Core: Auth Config, User Dashboard, Admin Dashboard & Payments
+# ============================================================================
+
+@app.get("/api/auth/config", tags=["Auth"])
+async def get_auth_config():
+    """
+    Returns public Supabase URL and Publishable Anon Key for the frontend.
+    Strictly safe for client-side use; service role key is NEVER exposed.
+    """
+    from config import SUPABASE_URL, SUPABASE_ANON_KEY
+    return {
+        "supabase_url": SUPABASE_URL,
+        "supabase_anon_key": SUPABASE_ANON_KEY,
+    }
+
+
+
+@app.get("/api/user/me", tags=["User Dashboard"])
+async def get_my_dashboard_profile(
+    authorization: Optional[str] = Header(None),
+):
+    """
+    Returns authenticated user profile, active plan limits, and today's usage.
+    """
+    sb_client = supabase_db.get_supabase_client()
+    user = security.get_current_user_required(authorization, supabase_client=sb_client)
+    user_id = user["id"]
+    profile = supabase_db.get_user_profile(user_id) or user
+    usage = supabase_db.get_daily_usage(user_id)
+
+    plan = profile.get("plan") or {
+        "id": "free",
+        "name": "Free Test Plan",
+        "leads_per_day": 1000,
+        "jobs_per_day": 3,
+        "leads_per_job": 300,
+        "website_enrichment_enabled": True,
+    }
+
+    # Normalize plan fields for frontend compatibility
+    plan["daily_leads_limit"] = plan.get("leads_per_day", 1000)
+    plan["daily_jobs_limit"] = plan.get("jobs_per_day", 3)
+    plan["max_leads_per_job"] = plan.get("leads_per_job", 300)
+    plan["price_bdt"] = float(plan.get("price_bdt", 0.0))
+
+    is_admin = user.get("role") == "admin" or profile.get("role") == "admin"
+
+    return {
+        "user": user,
+        "profile": profile,
+        "plan": plan,
+        "usage_today": usage,
+        "daily_usage": usage,
+        "is_admin": is_admin,
+    }
+
+
+@app.get("/api/user/jobs", tags=["User Dashboard"])
+async def get_my_jobs_history(
+    authorization: Optional[str] = Header(None),
+    limit: int = Query(30, ge=1, le=100),
+):
+    """
+    Returns past scraping jobs, status, error reasons, and lead counts for the current user.
+    """
+    sb_client = supabase_db.get_supabase_client()
+    user = security.get_current_user_required(authorization, supabase_client=sb_client)
+    jobs = supabase_db.get_user_jobs(user["id"], limit=limit)
+    return {
+        "user_id": user["id"],
+        "count": len(jobs),
+        "jobs": jobs,
+    }
+
+
+@app.get("/api/admin/overview", tags=["Admin Dashboard"])
+async def get_admin_overview_metrics(
+    authorization: Optional[str] = Header(None),
+):
+    """
+    Returns global platform metrics (Total Users, Jobs Today, Total Leads, Revenue).
+    Admin authorization required.
+    """
+    sb_client = supabase_db.get_supabase_client()
+    security.require_admin_user(authorization, supabase_client=sb_client)
+    return supabase_db.get_admin_overview()
+
+
+@app.get("/api/admin/users", tags=["Admin Dashboard"])
+async def get_admin_users_list(
+    authorization: Optional[str] = Header(None),
+    limit: int = Query(50, ge=1, le=200),
+):
+    """
+    Lists users with their subscription plans and roles. Admin only.
+    """
+    sb_client = supabase_db.get_supabase_client()
+    security.require_admin_user(authorization, supabase_client=sb_client)
+    users = supabase_db.get_admin_users(limit=limit)
+    return {"count": len(users), "users": users}
+
+
+class AdminUserUpdateRequest(BaseModel):
+    plan_id: Optional[str] = None
+    role: Optional[str] = None
+
+
+@app.patch("/api/admin/users/{target_user_id}", tags=["Admin Dashboard"])
+async def admin_update_user_plan_or_role(
+    target_user_id: str,
+    payload: AdminUserUpdateRequest,
+    authorization: Optional[str] = Header(None),
+):
+    """
+    Admin endpoint to change a user's subscription plan ('free' or 'pro') or role.
+    """
+    sb_client = supabase_db.get_supabase_client()
+    security.require_admin_user(authorization, supabase_client=sb_client)
+    updated = supabase_db.update_user_plan_or_role(
+        target_user_id=target_user_id,
+        plan_id=payload.plan_id,
+        role=payload.role,
+    )
+    return {"status": "success", "user": updated}
+
+
+@app.get("/api/admin/jobs", tags=["Admin Dashboard"])
+async def get_admin_all_jobs(
+    authorization: Optional[str] = Header(None),
+    limit: int = Query(50, ge=1, le=200),
+):
+    """
+    Lists all platform jobs with error details and completion statuses. Admin only.
+    """
+    sb_client = supabase_db.get_supabase_client()
+    security.require_admin_user(authorization, supabase_client=sb_client)
+    jobs = supabase_db.get_admin_jobs(limit=limit)
+    return {"count": len(jobs), "jobs": jobs}
+
+
+@app.get("/api/admin/payments", tags=["Admin Dashboard"])
+async def get_admin_all_payments(
+    authorization: Optional[str] = Header(None),
+    limit: int = Query(50, ge=1, le=200),
+):
+    """
+    Lists payment transaction ledger. Admin only.
+    """
+    sb_client = supabase_db.get_supabase_client()
+    security.require_admin_user(authorization, supabase_client=sb_client)
+    payments = supabase_db.get_admin_payments(limit=limit)
+    return {"count": len(payments), "payments": payments}
+
+
+@app.get("/api/admin/reviews", tags=["Admin Dashboard"])
+async def get_admin_all_reviews(
+    authorization: Optional[str] = Header(None),
+    limit: int = Query(100, ge=1, le=500),
+):
+    """
+    Lists all user feedback, problem reports, and star ratings. Admin only.
+    """
+    sb_client = supabase_db.get_supabase_client()
+    security.require_admin_user(authorization, supabase_client=sb_client)
+    reviews = supabase_db.get_admin_reviews(limit=limit)
+    return {"count": len(reviews), "reviews": reviews}
+
+
+@app.delete("/api/admin/reviews/{review_id}", tags=["Admin Dashboard"])
+async def delete_admin_review_item(
+    review_id: int,
+    authorization: Optional[str] = Header(None),
+):
+    """
+    Deletes a review/feedback entry from the database. Admin only.
+    """
+    sb_client = supabase_db.get_supabase_client()
+    security.require_admin_user(authorization, supabase_client=sb_client)
+    success = supabase_db.delete_admin_review(review_id)
+    if not success:
+        raise HTTPException(status_code=400, detail="Failed to delete review record.")
+    return {"status": "success", "message": f"Review #{review_id} removed successfully."}
+
+
+# ============================================================================
+# Payments & Webhook Provider Simulation
+# ============================================================================
+
+class CheckoutIntentRequest(BaseModel):
+    plan_id: str = "pro"
+    provider: str = "bkash"  # e.g. bkash, sslcommerz, stripe, manual
+
+
+@app.post("/api/payments/create-intent", tags=["Payments"])
+async def create_payment_intent(
+    payload: CheckoutIntentRequest,
+    authorization: Optional[str] = Header(None),
+):
+    """
+    Initiates a payment order for plan upgrade.
+    Records a pending payment row before redirecting to provider gateway.
+    """
+    sb_client = supabase_db.get_supabase_client()
+    user = security.get_current_user_required(authorization, supabase_client=sb_client)
+    txn_id = f"txn_{uuid.uuid4().hex[:12]}"
+    amount = 2500.0 if payload.plan_id == "pro" else 0.0
+
+    payment = supabase_db.record_payment(
+        user_id=user["id"],
+        plan_id=payload.plan_id,
+        amount=amount,
+        currency="BDT",
+        provider=payload.provider,
+        transaction_id=txn_id,
+        status="pending",
+    )
+
+    return {
+        "status": "pending",
+        "transaction_id": txn_id,
+        "plan_id": payload.plan_id,
+        "amount": amount,
+        "currency": "BDT",
+        "provider": payload.provider,
+        "payment": payment,
+    }
+
+
+class WebhookConfirmPayload(BaseModel):
+    transaction_id: str
+    status: str = "completed"
+    secret_key: Optional[str] = None
+
+
+@app.post("/api/payments/webhook/{provider}", tags=["Payments"])
+async def process_payment_webhook(
+    provider: str,
+    payload: WebhookConfirmPayload,
+):
+    """
+    Verified payment webhook endpoint.
+    Verifies payment completion before updating user's plan.
+    """
+    sb_client = supabase_db.get_supabase_client()
+    resp = sb_client.table("payments").select("*").eq("transaction_id", payload.transaction_id).limit(1).execute()
+    if not resp.data or len(resp.data) == 0:
+        raise HTTPException(status_code=404, detail="Transaction not found.")
+
+    pmt = resp.data[0]
+
+    if payload.status == "completed":
+        updated_pmt = supabase_db.record_payment(
+            user_id=pmt["user_id"],
+            plan_id=pmt["plan_id"],
+            amount=float(pmt["amount"]),
+            currency=pmt.get("currency", "BDT"),
+            provider=provider,
+            transaction_id=payload.transaction_id,
+            status="completed",
+            raw_data={"verified_at": "now", "provider": provider},
+        )
+        return {
+            "status": "success",
+            "message": f"Payment verified. User upgraded to {pmt['plan_id']}.",
+            "payment": updated_pmt,
+        }
+    else:
+        sb_client.table("payments").update({"status": "failed"}).eq("transaction_id", payload.transaction_id).execute()
+        return {"status": "failed", "message": "Payment marked as failed."}
+

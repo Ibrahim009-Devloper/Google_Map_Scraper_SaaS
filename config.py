@@ -23,7 +23,8 @@ DATA_DIR.mkdir(parents=True, exist_ok=True)
 
 # Database & Quota Settings
 TEMP_DB_PATH = DATA_DIR / "temp_cache.db"
-ANONYMOUS_LEAD_LIMIT = 1000
+ANONYMOUS_LEAD_LIMIT = 100
+ANONYMOUS_JOB_LIMIT = 1
 
 # LLM Configuration
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "").strip()
@@ -36,6 +37,7 @@ GROQ_MODEL = os.getenv("GROQ_MODEL", "openai/gpt-oss-120b")
 # Supabase Configuration
 SUPABASE_URL = os.getenv("SUPABASE_URL", "").strip()
 SUPABASE_KEY = os.getenv("SUPABASE_KEY", "").strip()
+SUPABASE_ANON_KEY = os.getenv("SUPABASE_ANON_KEY", "").strip()
 GOOGLE_CLIENT_ID = os.getenv("GOOGLE_CLIENT_ID", "").strip()
 
 # HTTP & Scraping Settings

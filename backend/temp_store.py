@@ -12,7 +12,7 @@ from typing import List, Dict, Any, Optional, Tuple, Union
 
 import aiosqlite
 
-from config import TEMP_DB_PATH, ANONYMOUS_LEAD_LIMIT
+from config import TEMP_DB_PATH, ANONYMOUS_LEAD_LIMIT, ANONYMOUS_JOB_LIMIT
 from agent.schemas import LeadItem
 
 
@@ -23,6 +23,7 @@ PRAGMA synchronous=NORMAL;
 CREATE TABLE IF NOT EXISTS anonymous_quotas (
     identifier TEXT PRIMARY KEY,
     total_leads_scraped INTEGER DEFAULT 0,
+    jobs_count INTEGER DEFAULT 0,
     updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
 );
 
@@ -65,6 +66,11 @@ def init_db_sync() -> None:
     os.makedirs(TEMP_DB_PATH.parent, exist_ok=True)
     with get_sync_connection() as conn:
         conn.executescript(INIT_SQL)
+        try:
+            conn.execute("ALTER TABLE anonymous_quotas ADD COLUMN jobs_count INTEGER DEFAULT 0;")
+            conn.commit()
+        except Exception:
+            pass
 
 
 async def init_db() -> None:
@@ -72,11 +78,15 @@ async def init_db() -> None:
     os.makedirs(TEMP_DB_PATH.parent, exist_ok=True)
     async with aiosqlite.connect(str(TEMP_DB_PATH)) as db:
         await db.executescript(INIT_SQL)
+        try:
+            await db.execute("ALTER TABLE anonymous_quotas ADD COLUMN jobs_count INTEGER DEFAULT 0;")
+        except Exception:
+            pass
         await db.commit()
 
 
 # ============================================================================
-# Quota Management (Anonymous Users: 1,000 Leads Limit)
+# Quota Management (Anonymous Users: 100 Leads & 1 Job Limit)
 # ============================================================================
 
 def get_anonymous_quota_sync(identifier: str) -> int:
@@ -88,13 +98,43 @@ def get_anonymous_quota_sync(identifier: str) -> int:
         return row["total_leads_scraped"] if row else 0
 
 
-async def get_anonymous_quota(identifier: str) -> int:
-    """Async: Returns total leads scraped so far by an IP or device fingerprint."""
+async def get_anonymous_usage(identifier: str) -> Dict[str, int]:
+    """Async: Returns total leads scraped and jobs count for unauthenticated user."""
     async with aiosqlite.connect(str(TEMP_DB_PATH)) as db:
         db.row_factory = aiosqlite.Row
-        async with db.execute("SELECT total_leads_scraped FROM anonymous_quotas WHERE identifier = ?", (identifier,)) as cursor:
+        async with db.execute(
+            "SELECT total_leads_scraped, COALESCE(jobs_count, 0) as jobs_count FROM anonymous_quotas WHERE identifier = ?",
+            (identifier,),
+        ) as cursor:
             row = await cursor.fetchone()
-            return row["total_leads_scraped"] if row else 0
+            if row:
+                return {
+                    "total_leads_scraped": row["total_leads_scraped"] or 0,
+                    "jobs_count": row["jobs_count"] or 0,
+                }
+            return {"total_leads_scraped": 0, "jobs_count": 0}
+
+
+async def record_anonymous_job_start(identifier: str) -> None:
+    """Increments jobs_count for an unauthenticated user upon starting a scrape job."""
+    async with aiosqlite.connect(str(TEMP_DB_PATH)) as db:
+        await db.execute(
+            """
+            INSERT INTO anonymous_quotas (identifier, total_leads_scraped, jobs_count, updated_at)
+            VALUES (?, 0, 1, CURRENT_TIMESTAMP)
+            ON CONFLICT(identifier) DO UPDATE SET
+                jobs_count = COALESCE(jobs_count, 0) + 1,
+                updated_at = CURRENT_TIMESTAMP;
+            """,
+            (identifier,),
+        )
+        await db.commit()
+
+
+async def get_anonymous_quota(identifier: str) -> int:
+    """Async: Returns total leads scraped so far by an IP or device fingerprint."""
+    usage = await get_anonymous_usage(identifier)
+    return usage["total_leads_scraped"]
 
 
 def increment_anonymous_quota_sync(identifier: str, count: int) -> int:
@@ -463,3 +503,10 @@ def cleanup_old_temp_data_sync(hours: int = 24) -> int:
         cursor.execute(f"DELETE FROM active_jobs WHERE job_id IN ({placeholders})", old_jobs)
         conn.commit()
         return len(old_jobs)
+
+
+# Ensure tables and migrations exist on load
+try:
+    init_db_sync()
+except Exception:
+    pass
