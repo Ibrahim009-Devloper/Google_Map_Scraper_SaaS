@@ -1131,6 +1131,9 @@ async function initSupabaseClient() {
     const res = await fetch("/api/auth/config");
     if (res.ok) {
       const config = await res.json();
+      if (!config.supabase_anon_key) {
+        console.warn("[Supabase] SUPABASE_ANON_KEY is not configured in backend environment. Client-side SDK will use resilient backend auth endpoints.");
+      }
       if (window.supabase && config.supabase_url && config.supabase_anon_key) {
         supabaseClient = window.supabase.createClient(config.supabase_url, config.supabase_anon_key);
 
@@ -1265,27 +1268,57 @@ async function handleEmailSignIn(event) {
   }
 
   try {
+    let authSuccess = false;
+    let authError = null;
+
+    // 1. Try client-side Supabase SDK if initialized
     if (supabaseClient) {
       const { data, error } = await supabaseClient.auth.signInWithPassword({ email, password });
       if (error) {
-        if (alertBox) {
-          alertBox.className = "p-3 rounded-lg text-xs font-body leading-relaxed bg-red-50 text-red-900 border border-red-200";
-          alertBox.innerHTML = `<strong>Sign In Failed:</strong> ${escapeHtml(error.message)}`;
-          alertBox.classList.remove("hidden");
-        }
-        showToast(error.message, "error");
-        return;
+        authError = error.message;
+      } else if (data && data.session) {
+        authToken = data.session.access_token;
+        currentUser = data.user;
+        authSuccess = true;
       }
+    }
 
-      authToken = data.session.access_token;
+    // 2. Fall back to backend /api/auth/login endpoint if client-side is unavailable or returned an error
+    if (!authSuccess) {
+      try {
+        const loginRes = await fetch("/api/auth/login", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ email, password }),
+        });
+        const loginData = await loginRes.json();
+        if (loginRes.ok && loginData.access_token) {
+          authToken = loginData.access_token;
+          currentUser = loginData.user;
+          authSuccess = true;
+          authError = null;
+        } else {
+          authError = loginData.detail || authError || "Authentication failed.";
+        }
+      } catch (backendErr) {
+        if (!authError) authError = backendErr.message;
+      }
+    }
+
+    if (authSuccess) {
       localStorage.setItem("gmaps_auth_token", authToken);
-      currentUser = data.user;
       clearAuthInputs();
       await fetchUserProfile();
       showToast("Signed in successfully!", "success");
       closeAuthModal();
     } else {
-      showToast("Supabase client not initialized.", "error");
+      const displayMsg = authError || "Sign in failed. Please verify your credentials.";
+      if (alertBox) {
+        alertBox.className = "p-3 rounded-lg text-xs font-body leading-relaxed bg-red-50 text-red-900 border border-red-200";
+        alertBox.innerHTML = `<strong>Sign In Failed:</strong> ${escapeHtml(displayMsg)}`;
+        alertBox.classList.remove("hidden");
+      }
+      showToast(displayMsg, "error");
     }
   } catch (err) {
     showToast(err.message, "error");
@@ -1350,28 +1383,43 @@ async function handleEmailSignUp(event) {
     }
 
     // 2. Account created and pre-confirmed! Now sign in directly to establish active session
+    let authSuccess = false;
     if (supabaseClient) {
       const { data, error } = await supabaseClient.auth.signInWithPassword({ email, password });
-      if (error) {
-        showToast("Account created! Please sign in with your password.", "success");
-        switchAuthTab("signin");
-        const signInEmail = document.getElementById("signInEmail");
-        if (signInEmail) signInEmail.value = email;
-        return;
-      }
-
-      if (data && data.session) {
+      if (!error && data && data.session) {
         authToken = data.session.access_token;
-        localStorage.setItem("gmaps_auth_token", authToken);
         currentUser = data.user;
-        clearAuthInputs();
-        await fetchUserProfile();
-        showToast("Account created and signed in!", "success");
-        closeAuthModal();
+        authSuccess = true;
       }
+    }
+
+    if (!authSuccess) {
+      try {
+        const autoLoginRes = await fetch("/api/auth/login", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ email, password }),
+        });
+        if (autoLoginRes.ok) {
+          const autoData = await autoLoginRes.json();
+          authToken = autoData.access_token;
+          currentUser = autoData.user;
+          authSuccess = true;
+        }
+      } catch (_) {}
+    }
+
+    if (authSuccess) {
+      localStorage.setItem("gmaps_auth_token", authToken);
+      clearAuthInputs();
+      await fetchUserProfile();
+      showToast("Account created and signed in!", "success");
+      closeAuthModal();
     } else {
-      showToast("Account created! Please sign in.", "success");
+      showToast("Account created! Please sign in with your password.", "success");
       switchAuthTab("signin");
+      const signInEmail = document.getElementById("signInEmail");
+      if (signInEmail) signInEmail.value = email;
     }
   } catch (err) {
     showToast(err.message, "error");

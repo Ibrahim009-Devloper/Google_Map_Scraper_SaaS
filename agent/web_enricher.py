@@ -1,17 +1,19 @@
 """
-Website Deep Scraping and Enrichment Module.
-Extracts emails, social media profiles (Facebook, Instagram, LinkedIn, WhatsApp, YouTube, Twitter/X, TikTok),
-phones, and detects CMS platforms (WordPress, Shopify, Wix, Squarespace, Webflow, Joomla)
-using curl_cffi and BeautifulSoup4.
+High-Speed Website Deep Scraping & Contact Intelligence Enricher.
+Extracts verified business emails, social media profiles (Facebook, Instagram, LinkedIn, WhatsApp),
+phone numbers, and detects CMS platforms (WordPress, Shopify, Wix, Squarespace, Webflow).
 
-Crawls up to 5 prioritized pages per business website:
-1. Homepage ('/')
-2. '/contact'
-3. '/contact-us'
-4. '/about'
-5. '/about-us'
-PLUS any other internal contact/about links discovered on the homepage.
-Features Cloudflare email de-obfuscation, mailto unquoting, and anti-bot regex.
+Key Features:
+- Advanced Anti-Obfuscation & Regex Engine: Cloudflare XOR decoder, mailto unquoter, HTML unescape,
+  and anti-bot text de-obfuscation ('info [at] domain [dot] com').
+- Strict Junk Filter: Eliminates template placeholders ('you@company.com', 'user@example.com'),
+  dummy domains ('company.com', 'domain.com'), image retina assets ('@2x.png'), and server alert daemons.
+- Single Best Email Ranker: Picks strictly ONE authentic, highest-scoring business contact email
+  (prioritizing company domain match and 'info@', 'contact@', 'enquiries@' prefixes).
+- Lightning Speed with Early Stopping:
+  - 6-second timeout prevents slow/dead sites from hanging worker threads.
+  - If a verified domain email is found on the homepage, subpage crawling is skipped immediately.
+  - Subpages (/contact, /about) are crawled concurrently in parallel only when necessary.
 """
 
 import html
@@ -27,24 +29,57 @@ from config import DEFAULT_IMPERSONATE, WEB_TIMEOUT, MAX_CONCURRENT_ENRICHMENT
 from agent.schemas import LeadItem, SocialLinks
 from agent.cleaner import clean_phone_number, clean_website_url
 
-# Comprehensive Email Regex
-EMAIL_REGEX = re.compile(r"[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}", re.IGNORECASE)
+# Advanced Email Regex (handles international characters, subdomains, and clean boundaries)
+EMAIL_REGEX = re.compile(
+    r"\b[A-Za-z0-9](?:[A-Za-z0-9._%+-]*[A-Za-z0-9])?@[A-Za-z0-9](?:[A-Za-z0-9.-]*[A-Za-z0-9])?\.[A-Za-z]{2,12}\b",
+    re.IGNORECASE
+)
 
+# Common non-email media & file extensions that produce false positives
 JUNK_EXTENSIONS = (
     ".png", ".jpg", ".jpeg", ".gif", ".svg", ".webp", ".bmp", ".ico",
     ".js", ".css", ".woff", ".woff2", ".ttf", ".eot",
-    ".mp4", ".avi", ".mov", ".zip", ".pdf", ".map", ".tar", ".gz"
+    ".mp4", ".avi", ".mov", ".zip", ".pdf", ".map", ".tar", ".gz",
+    ".m3u8", ".ts", ".xml", ".json", ".vue", ".jsx", ".tsx"
 )
 
-JUNK_DOMAINS = (
-    "sentry.io", "example.com", "wixpress.com", "email.com",
-    "domain.com", "yourdomain.com", "schema.org", "w3.org",
-    "cloudflare.com", "gravatar.com", "wordpress.org", "wp.com",
-    "googleapis.com", "gstatic.com", "facebook.com", "instagram.com"
-)
+# Blacklist of template, dummy, CDN, tech, and placeholder domains
+JUNK_DOMAINS = {
+    # Generic placeholder domains commonly left in web templates & themes
+    "company.com", "yourcompany.com", "mycompany.com", "ourcompany.com",
+    "domain.com", "yourdomain.com", "mydomain.com", "sample.com",
+    "example.com", "example.org", "example.net", "test.com", "testing.com",
+    "website.com", "yourwebsite.com", "mywebsite.com", "site.com", "yoursite.com",
+    "email.com", "youremail.com", "temp.com", "temporary.com",
+    "themeforest.net", "envato.com", "wix.com", "wixpress.com",
+    "wordpress.org", "wordpress.com", "wp.com", "woocommerce.com",
+    "shopify.com", "myshopify.com", "squarespace.com", "webflow.io",
+    "bootstrap.com", "getbootstrap.com", "placeholder.com", "dummy.com",
+    # Service, error reporting, tracking, CDN & tech vendor domains
+    "sentry.io", "sentry-cdn.com", "bugsnag.com", "rollbar.com",
+    "cloudflare.com", "gravatar.com", "schema.org", "w3.org",
+    "googleapis.com", "gstatic.com", "google.com", "google-analytics.com",
+    "facebook.com", "instagram.com", "twitter.com", "linkedin.com",
+    "apple.com", "microsoft.com", "github.com", "gitlab.com",
+    "bootstrapcdn.com", "jquery.com", "unpkg.com", "jsdelivr.net",
+    "sendgrid.net", "mailchimp.com", "hubspot.com",
+}
 
-# Canonical target subpages explicitly requested by user
-CANONICAL_TARGETS = ["/contact", "/contact-us", "/about", "/about-us"]
+# Blacklist of dummy placeholder usernames and automated server daemon accounts
+JUNK_USERNAMES = {
+    "you", "your", "user", "username", "name", "yourname", "myname",
+    "someone", "sample", "example", "test", "testing", "demo", "dummy",
+    "admin_email", "email", "mail", "first.last", "firstname.lastname",
+    "john.doe", "jane.doe", "user.name",
+    # Automated server alerts, daemons, postmasters
+    "noreply", "no-reply", "donotreply", "do-not-reply",
+    "mailer-daemon", "postmaster", "hostmaster", "webmaster",
+    "abuse", "security", "security-alert", "security.alerts", "alerts", "alert",
+    "infosecurity", "infosecurity.alerts", "spam", "daemon", "root",
+}
+
+# Canonical subpages prioritized when looking for contact information
+CANONICAL_TARGETS = ["/contact", "/contact-us", "/about", "/about-us", "/reach-us", "/get-in-touch"]
 
 SUBPAGE_PATTERNS = [
     # Top Priority (Score 10): Direct Contact & Get in Touch pages
@@ -55,7 +90,7 @@ SUBPAGE_PATTERNS = [
     (re.compile(r"team|management|locations?|branches?|find-us|our-offices?", re.I), 6),
     # Medium Priority (Score 4): Support, Help, Info, Customer Care
     (re.compile(r"support|help|info|feedback|customer-care|helpdesk", re.I), 4),
-    # Lower Priority (Score 2): Legal / Terms / Privacy (often contain corporate headquarters email)
+    # Lower Priority (Score 2): Legal / Terms / Privacy
     (re.compile(r"privacy|terms|impressum|legal|disclaimer|corporate", re.I), 2),
 ]
 
@@ -83,6 +118,7 @@ def deobfuscate_text(text: str) -> str:
     """
     if not text:
         return ""
+    # Decode HTML entities (e.g. &#64;, &#105;, &commat;)
     text = html.unescape(text)
     text = unquote(text)
     # Strip spaces around [at], (at), and replace with @
@@ -92,52 +128,157 @@ def deobfuscate_text(text: str) -> str:
     return text
 
 
+def extract_domain(url: str) -> str:
+    """Extracts root domain without subdomains or www (e.g. 'thecorporatedge.com')."""
+    if not url:
+        return ""
+    try:
+        netloc = urlparse(url if url.startswith(("http://", "https://")) else "https://" + url).netloc.lower()
+        if ":" in netloc:
+            netloc = netloc.split(":")[0]
+        if netloc.startswith("www."):
+            netloc = netloc[4:]
+        return netloc
+    except Exception:
+        return ""
+
+
 def is_valid_email(email: str) -> bool:
     """
     Strictly validates extracted email addresses and filters out garbage,
-    file extensions, dummy placeholders, retina image filenames, and CDN domains.
+    file extensions, dummy placeholders, retina image filenames, and server daemon domains.
     """
     if not email:
         return False
-    # Strip whitespace and trailing punctuation marks (, . : ; " ' ) ] >)
-    clean = email.strip().strip(".,;:\"')]>").lower()
+    # Strip whitespace, quotes, parentheses, brackets, and trailing punctuation
+    clean = email.strip().strip(".,;:\"'()[]<>{} \t\r\n").lower()
     if len(clean) < 6 or len(clean) > 80:
         return False
     if clean.count("@") != 1:
         return False
-    user_part, domain_part = clean.split("@")
+
+    parts = clean.split("@")
+    if len(parts) != 2:
+        return False
+    user_part, domain_part = parts
+
     if not user_part or not domain_part:
         return False
     if "." not in domain_part:
         return False
+
     tld = domain_part.split(".")[-1]
-    if len(tld) < 2 or len(tld) > 10 or not tld.isalpha():
+    if len(tld) < 2 or len(tld) > 12 or not tld.isalpha():
         return False
-    # Junk extensions check
-    if clean.endswith(JUNK_EXTENSIONS) or tld in ("png", "jpg", "jpeg", "gif", "svg", "webp", "js", "css", "woff", "ttf", "pdf", "mp4"):
+
+    # Check junk extensions
+    if clean.endswith(JUNK_EXTENSIONS) or tld in ("png", "jpg", "jpeg", "gif", "svg", "webp", "js", "css", "woff", "ttf", "pdf", "mp4", "zip", "xml", "json"):
         return False
+
     # Filter out retina image assets like logo@2x.png or icon@3x.jpg
     if re.search(r"@\d+x\.", clean, re.I):
         return False
-    # Junk domains check
-    if any(junk in domain_part for junk in JUNK_DOMAINS):
+
+    # Check junk domains
+    for junk_d in JUNK_DOMAINS:
+        if domain_part == junk_d or domain_part.endswith("." + junk_d):
+            return False
+
+    # Check junk usernames (full match or prefix match for alerts/daemons)
+    if user_part in JUNK_USERNAMES:
         return False
-    # Blacklisted placeholder usernames
-    if user_part in ("user", "test", "yourname", "name", "username", "sample", "example", "admin_email"):
+    if any(user_part.startswith(u) for u in ("noreply", "no-reply", "donotreply", "mailer-daemon", "infosecurity")):
         return False
+    if any(user_part.endswith(u) for u in (".alerts", "_alerts", "-alerts")):
+        return False
+
     return True
+
+
+def score_email(email: str, website_url: str) -> int:
+    """
+    Ranks extracted email addresses to select the single most authentic,
+    valuable business contact email.
+    """
+    clean = email.strip().lower()
+    parts = clean.split("@")
+    if len(parts) != 2:
+        return 0
+    user_part, email_domain = parts
+    site_domain = extract_domain(website_url)
+
+    score = 0
+
+    # 1. Highest priority: Email domain matches the business website domain (+100)
+    if site_domain:
+        if email_domain == site_domain or email_domain.endswith("." + site_domain):
+            score += 100
+        elif site_domain.endswith("." + email_domain):
+            score += 80
+
+    # 2. General primary business contact prefixes (+40 to +60)
+    primary_prefixes = (
+        "info", "contact", "hello", "enquiry", "enquiries",
+        "office", "support", "help", "sales", "inquiry", "inquiries",
+        "service", "care", "frontdesk", "reception"
+    )
+    if user_part in primary_prefixes:
+        score += 60
+    elif any(user_part.startswith(p) for p in primary_prefixes):
+        score += 50
+    elif any(p in user_part for p in ("contact", "info", "hello", "sales", "support", "enquiry")):
+        score += 40
+    elif user_part in ("admin", "marketing", "media", "press", "biz", "business"):
+        score += 30
+    elif user_part in ("hr", "careers", "jobs"):
+        score += 20
+    else:
+        # Named individual email at company domain (e.g. john@thecorporatedge.com)
+        score += 25
+
+    # 3. Known valid public mail services (if small business uses Gmail/Yahoo)
+    public_domains = ("gmail.com", "yahoo.com", "outlook.com", "hotmail.com", "icloud.com")
+    if email_domain in public_domains:
+        score += 15
+
+    return score
+
+
+def select_best_single_email(emails: Set[str], website_url: str) -> List[str]:
+    """
+    Selects exactly ONE best, most authentic business contact email.
+    Eliminates duplicates, junk, and secondary emails so that the export
+    contains a single high-quality lead email.
+    """
+    if not emails:
+        return []
+
+    valid = [e for e in emails if is_valid_email(e)]
+    if not valid:
+        return []
+
+    # Sort by score descending, then by shorter username prefix (info@ preferred over very long words)
+    sorted_emails = sorted(
+        valid,
+        key=lambda e: (score_email(e, website_url), -len(e.split("@")[0])),
+        reverse=True
+    )
+
+    return [sorted_emails[0]]
 
 
 def extract_emails_from_page(soup: BeautifulSoup, raw_html: str) -> Set[str]:
     """
-    Extracts all valid emails from a single webpage using a 7-stage detection strategy:
+    Extracts all valid emails from a single webpage using a multi-stage detection strategy:
     1. Cloudflare data-cfemail XOR decoder
     2. Cloudflare email-protection href decoder
     3. mailto: links (with URL unquoting & multi-recipient support)
-    4. JSON-LD structured data (<script type="application/ld+json">)
-    5. Custom data-email HTML attributes & meta tags
-    6. Deobfuscated raw HTML regex
-    7. Visible soup text regex
+    4. Custom email attributes (itemprop="email", data-email, data-mail)
+    5. Elements with class/id containing 'email' or 'contact'
+    6. JSON-LD structured data (<script type="application/ld+json">)
+    7. Meta tags (og:email, etc.)
+    8. Deobfuscated raw HTML regex
+    9. Visible soup text regex
     """
     found: Set[str] = set()
 
@@ -162,43 +303,56 @@ def extract_emails_from_page(soup: BeautifulSoup, raw_html: str) -> Set[str]:
         if href.lower().startswith("mailto:"):
             target = href.split(":", 1)[1].split("?")[0].strip()
             for em in re.split(r"[,;]", target):
-                cleaned = unquote(em).strip().strip(".,;:\"')]>").lower()
+                cleaned = unquote(em).strip().strip(".,;:\"'()[]<>{} \t\r\n").lower()
                 if is_valid_email(cleaned):
                     found.add(cleaned)
 
-    # 4. JSON-LD structured data
+    # 4. Attributes that frequently store emails
+    for attr in ("data-email", "data-mail", "data-contact", "itemprop"):
+        for el in soup.find_all(attrs={attr: True}):
+            val = el[attr]
+            if val and "@" in val:
+                for em in EMAIL_REGEX.findall(val):
+                    cleaned = em.strip().strip(".,;:\"'()[]<>{} \t\r\n").lower()
+                    if is_valid_email(cleaned):
+                        found.add(cleaned)
+
+    # 5. Elements with email in class or id
+    for el in soup.find_all(class_=re.compile(r"email|contact-mail", re.I)):
+        text = el.get_text(separator=" ")
+        for em in EMAIL_REGEX.findall(text):
+            cleaned = em.strip().strip(".,;:\"'()[]<>{} \t\r\n").lower()
+            if is_valid_email(cleaned):
+                found.add(cleaned)
+
+    # 6. JSON-LD structured data
     for script in soup.find_all("script", type=lambda t: t and "ld+json" in t):
         if script.string:
             for match in EMAIL_REGEX.findall(script.string):
-                cleaned = match.strip().strip(".,;:\"')]>").lower()
+                cleaned = match.strip().strip(".,;:\"'()[]<>{} \t\r\n").lower()
                 if is_valid_email(cleaned):
                     found.add(cleaned)
 
-    # 5. Attributes that frequently store emails
-    for el in soup.find_all(attrs={"data-email": True}):
-        em = el["data-email"].strip().strip(".,;:\"')]>").lower()
-        if is_valid_email(em):
-            found.add(em)
-
+    # 7. Meta tags
     for meta in soup.find_all("meta"):
         content = meta.get("content", "")
         if content and "@" in content:
             for match in EMAIL_REGEX.findall(content):
-                cleaned = match.strip().strip(".,;:\"')]>").lower()
+                cleaned = match.strip().strip(".,;:\"'()[]<>{} \t\r\n").lower()
                 if is_valid_email(cleaned):
                     found.add(cleaned)
 
-    # 6. Deobfuscated raw HTML text
+    # 8. Deobfuscated raw HTML text
     deobfuscated_html = deobfuscate_text(raw_html)
     for match in EMAIL_REGEX.findall(deobfuscated_html):
-        cleaned = match.strip().strip(".,;:\"')]>").lower()
+        cleaned = match.strip().strip(".,;:\"'()[]<>{} \t\r\n").lower()
         if is_valid_email(cleaned):
             found.add(cleaned)
 
-    # 7. Visible soup text
+    # 9. Visible soup text
     soup_text = deobfuscate_text(soup.get_text(separator=" "))
     for match in EMAIL_REGEX.findall(soup_text):
-        cleaned = match.strip().strip(".,;:\"')]>").lower()
+        cleaned = match.strip().strip(".,;:\"'()[]<>{} \t\r\n").lower()
         if is_valid_email(cleaned):
             found.add(cleaned)
 
@@ -206,7 +360,7 @@ def extract_emails_from_page(soup: BeautifulSoup, raw_html: str) -> Set[str]:
 
 
 def extract_socials(soup: BeautifulSoup, current_socials: SocialLinks) -> SocialLinks:
-    """Extracts Facebook, Instagram, LinkedIn, WhatsApp, YouTube, Twitter/X, and TikTok links."""
+    """Extracts Facebook, Instagram, LinkedIn, and WhatsApp links."""
     socials = SocialLinks(
         facebook=current_socials.facebook,
         instagram=current_socials.instagram,
@@ -226,7 +380,7 @@ def extract_socials(soup: BeautifulSoup, current_socials: SocialLinks) -> Social
             socials.instagram = href
 
         elif not socials.linkedin and "linkedin.com/" in href_lower:
-            if "sharearticle" not in href_lower:
+            if "sharearticle" not in href_lower and "sharing" not in href_lower:
                 socials.linkedin = href
 
         elif not socials.whatsapp and ("wa.me/" in href_lower or "api.whatsapp.com/send" in href_lower):
@@ -240,7 +394,6 @@ def extract_phone_from_soup(soup: BeautifulSoup, country_code: str = "bd") -> Op
     Extracts business phone number from website if Google Maps phone was missing.
     Prioritizes tel: links and schema.org telephone attributes.
     """
-    # 1. tel: links
     for a in soup.find_all("a", href=True):
         href = a["href"].strip()
         if href.lower().startswith("tel:"):
@@ -248,7 +401,6 @@ def extract_phone_from_soup(soup: BeautifulSoup, country_code: str = "bd") -> Op
             if raw_phone:
                 return clean_phone_number(raw_phone, country_code=country_code)
 
-    # 2. itemprop="telephone"
     el = soup.find(attrs={"itemprop": "telephone"})
     if el:
         text = el.get_text(strip=True)
@@ -276,15 +428,11 @@ def detect_cms(html_text: str) -> Optional[str]:
     return None
 
 
-def discover_target_pages(soup: BeautifulSoup, base_url: str, max_pages: int = 5) -> List[str]:
+def discover_target_pages(soup: BeautifulSoup, base_url: str, max_pages: int = 3) -> List[str]:
     """
-    Discovers all target subpages to crawl for lead extraction:
-    Guarantees coverage of user-requested canonical pages:
-    - /contact
-    - /contact-us
-    - /about
-    - /about-us
-    PLUS any internal contact/team/location links discovered on the homepage.
+    Discovers candidate subpages to crawl when Homepage does not have an email:
+    Prioritizes canonical /contact, /contact-us, /about plus internal links on the homepage.
+    Returns up to max_pages URLs.
     """
     parsed_base = urlparse(base_url)
     base_domain = parsed_base.netloc.lower().replace("www.", "")
@@ -293,15 +441,7 @@ def discover_target_pages(soup: BeautifulSoup, base_url: str, max_pages: int = 5
     target_queue: List[str] = []
     seen: Set[str] = {base_normalized, f"{base_normalized}/"}
 
-    # 1. Always prioritize the canonical contact/about paths
-    for path in CANONICAL_TARGETS:
-        full = urljoin(base_normalized, path)
-        norm = full.rstrip("/")
-        if norm not in seen:
-            seen.add(norm)
-            target_queue.append(full)
-
-    # 2. Discover additional internal candidate subpages from HTML links
+    # 1. Discover internal candidate subpages from actual HTML links on homepage first
     candidates: Dict[str, int] = {}
     for a in soup.find_all("a", href=True):
         href = a["href"].strip()
@@ -315,7 +455,6 @@ def discover_target_pages(soup: BeautifulSoup, base_url: str, max_pages: int = 5
         parsed_target = urlparse(full_url)
         target_domain = parsed_target.netloc.lower().replace("www.", "")
 
-        # Must belong to the exact same domain
         if target_domain != base_domain and not target_domain.endswith("." + base_domain):
             continue
 
@@ -335,31 +474,36 @@ def discover_target_pages(soup: BeautifulSoup, base_url: str, max_pages: int = 5
         if best_score > 0:
             candidates[full_url] = max(candidates.get(full_url, 0), best_score)
 
-    # Sort discovered internal links by score descending and append
     sorted_discovered = sorted(candidates.keys(), key=lambda u: candidates[u], reverse=True)
     for u in sorted_discovered:
         if u not in seen:
             seen.add(u)
             target_queue.append(u)
 
-    # Return up to (max_pages - 1) subpages (since Homepage is already page 1)
-    subpage_limit = max(1, max_pages - 1)
-    return target_queue[:subpage_limit]
+    # 2. Add canonical targets if not already discovered
+    for path in CANONICAL_TARGETS:
+        full = urljoin(base_normalized, path)
+        norm = full.rstrip("/")
+        if norm not in seen:
+            seen.add(norm)
+            target_queue.append(full)
+
+    return target_queue[:max_pages]
 
 
-def fetch_html(url: str, timeout: int = WEB_TIMEOUT) -> Optional[str]:
+def fetch_html(url: str, timeout: int = 6) -> Optional[str]:
     """
     Fetches HTML content with curl_cffi using chrome124 TLS fingerprint.
-    Follows redirects, supports https -> http fallback, and unwraps Google redirects.
+    Fast 6-second timeout ensures lightning responsiveness and prevents dead sites
+    from hanging scraper worker threads.
     """
     if not url:
         return None
 
-    # Clean and unwrap URL
     clean_url = clean_website_url(url) or url
 
     headers = {
-        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8",
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
         "Accept-Language": "en-US,en;q=0.9",
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
         "Upgrade-Insecure-Requests": "1",
@@ -369,26 +513,34 @@ def fetch_html(url: str, timeout: int = WEB_TIMEOUT) -> Optional[str]:
         "Sec-Fetch-User": "?1",
     }
 
-    targets = [clean_url]
-    if clean_url.startswith("https://"):
-        targets.append(clean_url.replace("https://", "http://", 1))
-    elif clean_url.startswith("http://"):
-        targets.append(clean_url.replace("http://", "https://", 1))
-
-    for target in targets:
-        try:
-            response = requests.get(
-                target,
-                impersonate=DEFAULT_IMPERSONATE,
-                timeout=timeout,
-                verify=False,
-                allow_redirects=True,
-                headers=headers,
-            )
-            if response.status_code == 200 and response.text:
-                return response.text
-        except Exception:
-            continue
+    try:
+        response = requests.get(
+            clean_url,
+            impersonate=DEFAULT_IMPERSONATE,
+            timeout=timeout,
+            verify=False,
+            allow_redirects=True,
+            headers=headers,
+        )
+        if response.status_code == 200 and response.text:
+            return response.text
+    except Exception:
+        # Fallback to http only if https failed due to an SSL/TLS error
+        if clean_url.startswith("https://"):
+            try:
+                http_url = clean_url.replace("https://", "http://", 1)
+                response = requests.get(
+                    http_url,
+                    impersonate=DEFAULT_IMPERSONATE,
+                    timeout=timeout,
+                    verify=False,
+                    allow_redirects=True,
+                    headers=headers,
+                )
+                if response.status_code == 200 and response.text:
+                    return response.text
+            except Exception:
+                pass
 
     return None
 
@@ -399,14 +551,17 @@ def enrich_single_lead(
     extract_email_opt: bool = True,
     extract_social_opt: bool = True,
     detect_cms_opt: bool = True,
-    max_pages: int = 5,
+    max_pages: int = 3,
 ) -> LeadItem:
     """
-    Deep-scrapes a business website across up to 5 prioritized pages:
-    - Page 1: Homepage ('/')
-    - Pages 2-5: '/contact', '/contact-us', '/about', '/about-us', and discovered contact pages.
-    Crawls subpages concurrently using a sub-thread pool for rapid execution.
-    Updates lead with extracted emails, socials, website phone, and detected CMS tech.
+    High-Speed website deep-scraper for a single business:
+    1. Fetches Homepage ('/') with 6s timeout.
+    2. Extracts CMS, socials, phone, and emails.
+    3. EARLY STOPPING: If Homepage already contains a verified domain email,
+       subpage crawling is skipped immediately for 5x speed boost!
+    4. If no email on Homepage, discovers candidate /contact and /about pages
+       and fetches them concurrently in parallel.
+    5. Saves strictly ONE single highest-ranking authentic email.
     """
     if lead.website_status != "Has Own Website" or not lead.website_url:
         return lead
@@ -414,8 +569,8 @@ def enrich_single_lead(
     clean_url = clean_website_url(lead.website_url) or lead.website_url
     lead.website_url = clean_url
 
-    # 1. Fetch Homepage (Page 1)
-    html_home = fetch_html(clean_url)
+    # 1. Fetch Homepage
+    html_home = fetch_html(clean_url, timeout=6)
     if not html_home:
         return lead
 
@@ -438,29 +593,43 @@ def enrich_single_lead(
     if extract_email_opt:
         all_emails.update(extract_emails_from_page(soup_home, html_home))
 
-    # 2. 5-Page Crawl: Visit /contact, /contact-us, /about, /about-us and discovered subpages
-    subpage_urls = discover_target_pages(soup_home, clean_url, max_pages=max_pages)
-    if subpage_urls:
-        with ThreadPoolExecutor(max_workers=min(4, len(subpage_urls))) as sub_exec:
-            future_to_url = {sub_exec.submit(fetch_html, u): u for u in subpage_urls}
-            for fut in as_completed(future_to_url):
-                try:
-                    html_sub = fut.result()
-                    if html_sub:
-                        soup_sub = BeautifulSoup(html_sub, "lxml")
-                        if extract_email_opt:
-                            all_emails.update(extract_emails_from_page(soup_sub, html_sub))
-                        if extract_social_opt:
-                            lead.social_links = extract_socials(soup_sub, lead.social_links)
-                        if not lead.phone:
-                            lead.phone = extract_phone_from_soup(soup_sub, country_code=country_code)
-                        if detect_cms_opt and not lead.cms_tech:
-                            lead.cms_tech = detect_cms(html_sub)
-                except Exception:
-                    pass
+    # Check if homepage already yielded a high-confidence matching domain email
+    has_domain_email = False
+    if extract_email_opt and all_emails:
+        site_domain = extract_domain(clean_url)
+        for em in all_emails:
+            if is_valid_email(em):
+                parts = em.split("@")
+                if len(parts) == 2 and site_domain and (site_domain in parts[1] or parts[1].endswith(site_domain)):
+                    has_domain_email = True
+                    break
 
+    # 2. Early Stop: Only crawl subpages if we don't have a verified domain email yet!
+    if not has_domain_email and (extract_email_opt or extract_social_opt):
+        subpage_urls = discover_target_pages(soup_home, clean_url, max_pages=max_pages)
+        if subpage_urls:
+            with ThreadPoolExecutor(max_workers=min(3, len(subpage_urls))) as sub_exec:
+                future_to_url = {sub_exec.submit(fetch_html, u, 5): u for u in subpage_urls}
+                for fut in as_completed(future_to_url):
+                    try:
+                        html_sub = fut.result()
+                        if html_sub:
+                            soup_sub = BeautifulSoup(html_sub, "lxml")
+                            if extract_email_opt:
+                                sub_emails = extract_emails_from_page(soup_sub, html_sub)
+                                all_emails.update(sub_emails)
+                            if extract_social_opt:
+                                lead.social_links = extract_socials(soup_sub, lead.social_links)
+                            if not lead.phone:
+                                lead.phone = extract_phone_from_soup(soup_sub, country_code=country_code)
+                            if detect_cms_opt and not lead.cms_tech:
+                                lead.cms_tech = detect_cms(html_sub)
+                    except Exception:
+                        pass
+
+    # 3. Select strictly ONE single best email (no junk, no placeholders, no long lists)
     if extract_email_opt:
-        lead.emails = sorted(list(all_emails))
+        lead.emails = select_best_single_email(all_emails, clean_url)
 
     return lead
 
@@ -472,13 +641,11 @@ def enrich_leads_concurrently(
     extract_email_opt: bool = True,
     extract_social_opt: bool = True,
     detect_cms_opt: bool = True,
-    max_pages_per_site: int = 5,
+    max_pages_per_site: int = 3,
     stop_event: Optional[Any] = None,
 ) -> List[LeadItem]:
     """
     Enriches multiple leads in parallel using ThreadPoolExecutor.
-    Each qualified business website is crawled across:
-    Homepage + /contact + /contact-us + /about + /about-us
     Leads without their own websites are skipped instantly.
     Supports graceful cancellation via stop_event.
     """

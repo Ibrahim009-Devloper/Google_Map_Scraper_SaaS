@@ -148,6 +148,11 @@ class RegisterRequest(BaseModel):
     password: str = Field(..., min_length=6)
 
 
+class LoginRequest(BaseModel):
+    email: str = Field(..., min_length=5, max_length=255)
+    password: str = Field(..., min_length=1)
+
+
 class SyncSessionRequest(BaseModel):
     job_id: str = Field(..., min_length=3, max_length=100, description="Job session ID to sync")
 
@@ -210,6 +215,48 @@ async def register_new_user(payload: RegisterRequest):
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=f"Registration failed: {err_msg}"
+        )
+
+
+@app.post("/api/auth/login", tags=["Auth"])
+async def login_user(payload: LoginRequest):
+    """
+    Authenticates a user via Supabase Auth and returns an access_token.
+    Provides a resilient backend fallback for sign in when client-side Supabase SDK is not initialized.
+    """
+    clean_email = payload.email.strip().lower()
+    sb_client = supabase_db.get_supabase_client()
+    try:
+        res = sb_client.auth.sign_in_with_password({
+            "email": clean_email,
+            "password": payload.password
+        })
+        if not res.session or not res.session.access_token:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Invalid credentials. Please check your email and password."
+            )
+        return {
+            "status": "success",
+            "access_token": res.session.access_token,
+            "user": {
+                "id": str(res.user.id),
+                "email": res.user.email,
+                "user_metadata": res.user.user_metadata or {},
+            }
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        err_msg = str(e)
+        if "invalid" in err_msg.lower() or "credentials" in err_msg.lower():
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Invalid email or password. Please verify your credentials."
+            )
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Login failed: {err_msg}"
         )
 
 
@@ -404,6 +451,7 @@ async def start_scraping_job(
         session_owner=session_owner,
         is_authenticated=is_authenticated,
         prompt=payload.prompt,
+        scrape_website=payload.scrape_website,
     )
 
     # Audit in Supabase public.jobs table if authenticated
@@ -611,8 +659,22 @@ async def download_scraped_leads(
             detail="No leads found for this job ID. Job may still be initializing or returned zero results.",
         )
 
+    job = await temp_store.get_job(job_id)
+    is_job_enrichment = bool(job and job.get("scrape_website"))
+    has_data_enrichment = (
+        any(bool(l.emails) for l in leads) or
+        any(bool(l.social_links and (
+            l.social_links.facebook or
+            l.social_links.instagram or
+            l.social_links.linkedin or
+            l.social_links.whatsapp
+        )) for l in leads) or
+        any(bool(l.cms_tech) for l in leads)
+    )
+    include_enrichment = is_job_enrichment or has_data_enrichment
+
     if format == "xlsx":
-        excel_bytes = generate_leads_excel(leads, title=f"Job {job_id}")
+        excel_bytes = generate_leads_excel(leads, title=f"Job {job_id}", include_enrichment=include_enrichment)
         return Response(
             content=excel_bytes,
             media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
@@ -631,11 +693,14 @@ async def download_scraped_leads(
     # CSV Format
     fieldnames = [
         "place_id", "name", "category", "phone", "website_status", "website_url",
-        "facebook", "instagram", "linkedin", "whatsapp", "emails", "cms_tech",
+    ]
+    if include_enrichment:
+        fieldnames.extend(["facebook", "instagram", "linkedin", "whatsapp", "emails", "cms_tech"])
+    fieldnames.extend([
         "rating", "reviews_count", "price_range", "is_unclaimed_business",
         "neighborhood", "address", "latitude", "longitude", "order_link",
         "google_maps_url", "source_query"
-    ]
+    ])
 
     output = io.StringIO()
     # Add UTF-8 BOM so Excel opens non-ASCII characters cleanly
@@ -644,19 +709,13 @@ async def download_scraped_leads(
     writer.writeheader()
 
     for lead in leads:
-        writer.writerow({
+        row = {
             "place_id": lead.place_id,
             "name": lead.name,
             "category": lead.category or "",
             "phone": lead.phone or "",
             "website_status": lead.website_status,
             "website_url": lead.website_url or "",
-            "facebook": lead.social_links.facebook or "",
-            "instagram": lead.social_links.instagram or "",
-            "linkedin": lead.social_links.linkedin or "",
-            "whatsapp": lead.social_links.whatsapp or "",
-            "emails": "; ".join(lead.emails) if lead.emails else "",
-            "cms_tech": lead.cms_tech or "",
             "rating": lead.rating if lead.rating is not None else "",
             "reviews_count": lead.reviews_count,
             "price_range": lead.price_range or "",
@@ -668,7 +727,17 @@ async def download_scraped_leads(
             "order_link": lead.order_link or "",
             "google_maps_url": lead.google_maps_url or "",
             "source_query": lead.source_query or "",
-        })
+        }
+        if include_enrichment:
+            row.update({
+                "facebook": (lead.social_links.facebook or "") if lead.social_links else "",
+                "instagram": (lead.social_links.instagram or "") if lead.social_links else "",
+                "linkedin": (lead.social_links.linkedin or "") if lead.social_links else "",
+                "whatsapp": (lead.social_links.whatsapp or "") if lead.social_links else "",
+                "emails": "; ".join(lead.emails) if lead.emails else "",
+                "cms_tech": lead.cms_tech or "",
+            })
+        writer.writerow(row)
 
     csv_content = output.getvalue()
     return Response(

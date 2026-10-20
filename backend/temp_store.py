@@ -32,6 +32,7 @@ CREATE TABLE IF NOT EXISTS active_jobs (
     session_owner TEXT NOT NULL,
     is_authenticated INTEGER DEFAULT 0,
     prompt TEXT NOT NULL,
+    scrape_website INTEGER DEFAULT 0,
     status TEXT DEFAULT 'running',
     current_area TEXT DEFAULT 'Initializing AI Planner...',
     leads_count INTEGER DEFAULT 0,
@@ -71,6 +72,11 @@ def init_db_sync() -> None:
             conn.commit()
         except Exception:
             pass
+        try:
+            conn.execute("ALTER TABLE active_jobs ADD COLUMN scrape_website INTEGER DEFAULT 0;")
+            conn.commit()
+        except Exception:
+            pass
 
 
 async def init_db() -> None:
@@ -80,6 +86,10 @@ async def init_db() -> None:
         await db.executescript(INIT_SQL)
         try:
             await db.execute("ALTER TABLE anonymous_quotas ADD COLUMN jobs_count INTEGER DEFAULT 0;")
+        except Exception:
+            pass
+        try:
+            await db.execute("ALTER TABLE active_jobs ADD COLUMN scrape_website INTEGER DEFAULT 0;")
         except Exception:
             pass
         await db.commit()
@@ -204,16 +214,22 @@ def reset_anonymous_quota_sync(identifier: str) -> None:
 # Job State Management
 # ============================================================================
 
-def create_job_sync(job_id: str, session_owner: str, is_authenticated: bool, prompt: str) -> Dict[str, Any]:
+def create_job_sync(
+    job_id: str,
+    session_owner: str,
+    is_authenticated: bool,
+    prompt: str,
+    scrape_website: bool = False,
+) -> Dict[str, Any]:
     """Creates a new active scraping job record synchronously."""
     with get_sync_connection() as conn:
         cursor = conn.cursor()
         cursor.execute(
             """
-            INSERT OR REPLACE INTO active_jobs (job_id, session_owner, is_authenticated, prompt, status, current_area, leads_count)
-            VALUES (?, ?, ?, ?, 'running', 'Initializing AI Planner...', 0)
+            INSERT OR REPLACE INTO active_jobs (job_id, session_owner, is_authenticated, prompt, scrape_website, status, current_area, leads_count)
+            VALUES (?, ?, ?, ?, ?, 'running', 'Initializing AI Planner...', 0)
             """,
-            (job_id, session_owner, 1 if is_authenticated else 0, prompt),
+            (job_id, session_owner, 1 if is_authenticated else 0, prompt, 1 if scrape_website else 0),
         )
         conn.commit()
     return {
@@ -221,21 +237,28 @@ def create_job_sync(job_id: str, session_owner: str, is_authenticated: bool, pro
         "session_owner": session_owner,
         "is_authenticated": is_authenticated,
         "prompt": prompt,
+        "scrape_website": 1 if scrape_website else 0,
         "status": "running",
         "current_area": "Initializing AI Planner...",
         "leads_count": 0,
     }
 
 
-async def create_job(job_id: str, session_owner: str, is_authenticated: bool, prompt: str) -> Dict[str, Any]:
+async def create_job(
+    job_id: str,
+    session_owner: str,
+    is_authenticated: bool,
+    prompt: str,
+    scrape_website: bool = False,
+) -> Dict[str, Any]:
     """Async: Creates a new active scraping job record."""
     async with aiosqlite.connect(str(TEMP_DB_PATH)) as db:
         await db.execute(
             """
-            INSERT OR REPLACE INTO active_jobs (job_id, session_owner, is_authenticated, prompt, status, current_area, leads_count)
-            VALUES (?, ?, ?, ?, 'running', 'Initializing AI Planner...', 0)
+            INSERT OR REPLACE INTO active_jobs (job_id, session_owner, is_authenticated, prompt, scrape_website, status, current_area, leads_count)
+            VALUES (?, ?, ?, ?, ?, 'running', 'Initializing AI Planner...', 0)
             """,
-            (job_id, session_owner, 1 if is_authenticated else 0, prompt),
+            (job_id, session_owner, 1 if is_authenticated else 0, prompt, 1 if scrape_website else 0),
         )
         await db.commit()
     return {
@@ -243,6 +266,7 @@ async def create_job(job_id: str, session_owner: str, is_authenticated: bool, pr
         "session_owner": session_owner,
         "is_authenticated": is_authenticated,
         "prompt": prompt,
+        "scrape_website": 1 if scrape_website else 0,
         "status": "running",
         "current_area": "Initializing AI Planner...",
         "leads_count": 0,

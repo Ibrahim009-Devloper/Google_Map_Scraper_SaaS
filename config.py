@@ -40,10 +40,24 @@ SUPABASE_KEY = os.getenv("SUPABASE_KEY", "").strip()
 SUPABASE_ANON_KEY = os.getenv("SUPABASE_ANON_KEY", "").strip()
 GOOGLE_CLIENT_ID = os.getenv("GOOGLE_CLIENT_ID", "").strip()
 
+# If SUPABASE_ANON_KEY was not explicitly provided, check if SUPABASE_KEY is an anon key
+if not SUPABASE_ANON_KEY and SUPABASE_KEY:
+    try:
+        import base64
+        import json
+        parts = SUPABASE_KEY.split(".")
+        if len(parts) >= 2:
+            padding = "=" * (4 - len(parts[1]) % 4)
+            payload = json.loads(base64.urlsafe_b64decode(parts[1] + padding).decode("utf-8"))
+            if payload.get("role") == "anon":
+                SUPABASE_ANON_KEY = SUPABASE_KEY
+    except Exception:
+        pass
+
 # HTTP & Scraping Settings
 DEFAULT_IMPERSONATE = "chrome124"
 DEFAULT_TIMEOUT = 15
-WEB_TIMEOUT = 15
+WEB_TIMEOUT = 6
 MAX_CONCURRENT_ENRICHMENT = 10
 
 # Pagination Defaults

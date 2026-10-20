@@ -13,13 +13,37 @@ from agent.schemas import LeadItem, SocialLinks
 
 # Blacklist of false-positive / boilerplate email domains and patterns
 JUNK_EMAIL_DOMAINS = {
-    "sentry.io", "example.com", "yourdomain.com", "domain.com", "wixpress.com",
-    "wordpress.org", "mysite.com", "email.com", "placeholder.com", "support@wix.com",
+    "company.com", "yourcompany.com", "mycompany.com", "ourcompany.com",
+    "domain.com", "yourdomain.com", "mydomain.com", "sample.com",
+    "example.com", "example.org", "example.net", "test.com", "testing.com",
+    "website.com", "yourwebsite.com", "mywebsite.com", "site.com", "yoursite.com",
+    "email.com", "youremail.com", "temp.com", "temporary.com",
+    "themeforest.net", "envato.com", "wix.com", "wixpress.com",
+    "wordpress.org", "wordpress.com", "wp.com", "woocommerce.com",
+    "shopify.com", "myshopify.com", "squarespace.com", "webflow.io",
+    "bootstrap.com", "getbootstrap.com", "placeholder.com", "dummy.com",
+    "sentry.io", "sentry-cdn.com", "bugsnag.com", "rollbar.com",
+    "cloudflare.com", "gravatar.com", "schema.org", "w3.org",
+    "googleapis.com", "gstatic.com", "google.com", "google-analytics.com",
+    "facebook.com", "instagram.com", "twitter.com", "linkedin.com",
+    "apple.com", "microsoft.com", "github.com", "gitlab.com",
+    "bootstrapcdn.com", "jquery.com", "unpkg.com", "jsdelivr.net",
+}
+
+JUNK_EMAIL_USERNAMES = {
+    "you", "your", "user", "username", "name", "yourname", "myname",
+    "someone", "sample", "example", "test", "testing", "demo", "dummy",
+    "admin_email", "email", "mail", "first.last", "firstname.lastname",
+    "john.doe", "jane.doe", "user.name",
+    "noreply", "no-reply", "donotreply", "do-not-reply",
+    "mailer-daemon", "postmaster", "hostmaster", "webmaster",
+    "abuse", "security", "security-alert", "security.alerts", "alerts", "alert",
+    "infosecurity", "infosecurity.alerts", "spam", "daemon", "root",
 }
 
 JUNK_EMAIL_EXTENSIONS = (
     ".png", ".jpg", ".jpeg", ".gif", ".svg", ".webp", ".bmp", ".ico",
-    ".js", ".css", ".woff", ".woff2", ".ttf", ".mp4", ".pdf",
+    ".js", ".css", ".woff", ".woff2", ".ttf", ".mp4", ".pdf", ".zip",
 )
 
 
@@ -156,14 +180,17 @@ def clean_email_list(emails: List[str]) -> List[str]:
     """
     Cleans, deduplicates, and filters extracted email addresses:
     - Lowercases all addresses
-    - Removes fake / image / placeholder emails
+    - Removes fake / image / placeholder / dummy emails
     - Strips trailing punctuation
+    - Selects the single best authentic contact email
     """
     if not emails:
         return []
 
     valid_emails = []
     seen = set()
+
+    primary_keywords = ("info", "contact", "hello", "enquiry", "enquiries", "support", "sales", "office", "mail")
 
     for e in emails:
         clean_e = str(e).strip().lower().rstrip(".,;:)\"'>")
@@ -174,8 +201,21 @@ def clean_email_list(emails: List[str]) -> List[str]:
         if any(clean_e.endswith(ext) for ext in JUNK_EMAIL_EXTENSIONS):
             continue
 
-        domain = clean_e.split("@")[-1]
-        if domain in JUNK_EMAIL_DOMAINS:
+        parts = clean_e.split("@")
+        if len(parts) != 2:
+            continue
+        user, domain = parts
+
+        # Check junk domains
+        if domain in JUNK_EMAIL_DOMAINS or any(domain.endswith("." + jd) for jd in JUNK_EMAIL_DOMAINS):
+            continue
+
+        # Check junk usernames
+        if user in JUNK_EMAIL_USERNAMES:
+            continue
+        if any(user.startswith(ju) for ju in ("noreply", "no-reply", "donotreply", "mailer-daemon", "infosecurity")):
+            continue
+        if any(user.endswith(ju) for ju in (".alerts", "_alerts", "-alerts")):
             continue
 
         # Check basic email regex syntax
@@ -186,7 +226,23 @@ def clean_email_list(emails: List[str]) -> List[str]:
             seen.add(clean_e)
             valid_emails.append(clean_e)
 
-    return valid_emails
+    if not valid_emails:
+        return []
+
+    # Sort valid emails so primary prefixes (info, contact, hello, enquiry, etc.) are top priority
+    def _email_rank(em: str) -> int:
+        u = em.split("@")[0]
+        if u in primary_keywords:
+            return 100
+        if any(u.startswith(p) for p in primary_keywords):
+            return 80
+        if any(p in u for p in primary_keywords):
+            return 60
+        return 20
+
+    valid_emails.sort(key=_email_rank, reverse=True)
+    # Return single best email
+    return [valid_emails[0]]
 
 
 def clean_website_url(raw_url: Optional[str]) -> Optional[str]:

@@ -9,7 +9,7 @@ Generates publication-ready spreadsheets featuring:
 """
 
 import io
-from typing import List
+from typing import List, Optional
 import openpyxl
 from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
 from openpyxl.utils import get_column_letter
@@ -17,22 +17,49 @@ from openpyxl.utils import get_column_letter
 from agent.schemas import LeadItem
 
 
-def generate_leads_excel(leads: List[LeadItem], title: str = "LeadPulse Verified Leads") -> bytes:
+def generate_leads_excel(
+    leads: List[LeadItem],
+    title: str = "LeadPulse Verified Leads",
+    include_enrichment: Optional[bool] = None,
+) -> bytes:
     """
     Exports a list of LeadItem objects into a beautifully formatted,
     executive-grade Microsoft Excel (.xlsx) spreadsheet.
+
+    When include_enrichment is False (or when auto-detected that no website
+    enrichment was performed), empty enrichment columns (Emails, Facebook,
+    Instagram, LinkedIn, WhatsApp, CMS / Tech) are excluded to ensure a clean,
+    uncluttered Google Maps spreadsheet without empty columns.
     """
+    if include_enrichment is None:
+        include_enrichment = (
+            any(bool(l.emails) for l in leads) or
+            any(bool(l.social_links and (
+                l.social_links.facebook or
+                l.social_links.instagram or
+                l.social_links.linkedin or
+                l.social_links.whatsapp
+            )) for l in leads) or
+            any(bool(l.cms_tech) for l in leads)
+        )
+
     wb = openpyxl.Workbook()
     ws = wb.active
     ws.title = "Verified Leads"
     ws.views.sheetView[0].showGridLines = True
 
-    # Column Definitions: (Header Name, Field Extractor, Default Width, Alignment)
+    # Base Google Maps Columns (always present)
     columns = [
         ("Business Name", lambda l: l.name, 28, "left"),
         ("Category", lambda l: l.category or "", 22, "left"),
         ("Phone Number", lambda l: l.phone or "", 18, "center"),
-        ("Emails", lambda l: "; ".join(l.emails) if l.emails else "", 28, "left"),
+    ]
+
+    # Only include Emails if website enrichment was performed
+    if include_enrichment:
+        columns.append(("Emails", lambda l: "; ".join(l.emails) if l.emails else "", 28, "left"))
+
+    columns.extend([
         ("Website Status", lambda l: l.website_status, 16, "center"),
         ("Website URL", lambda l: l.website_url or "", 26, "left"),
         ("Rating", lambda l: l.rating if l.rating is not None else "", 10, "center"),
@@ -41,16 +68,24 @@ def generate_leads_excel(leads: List[LeadItem], title: str = "LeadPulse Verified
         ("Unclaimed Business", lambda l: "Yes" if l.is_unclaimed_business else "No", 18, "center"),
         ("Neighborhood", lambda l: l.neighborhood or "", 18, "left"),
         ("Full Address", lambda l: l.address or "", 36, "left"),
-        ("Facebook", lambda l: l.social_links.facebook or "", 22, "left"),
-        ("Instagram", lambda l: l.social_links.instagram or "", 22, "left"),
-        ("LinkedIn", lambda l: l.social_links.linkedin or "", 22, "left"),
-        ("WhatsApp", lambda l: l.social_links.whatsapp or "", 18, "center"),
-        ("CMS / Tech", lambda l: l.cms_tech or "", 14, "center"),
+    ])
+
+    # Only include Social Links & CMS Tech if website enrichment was performed
+    if include_enrichment:
+        columns.extend([
+            ("Facebook", lambda l: (l.social_links.facebook or "") if l.social_links else "", 22, "left"),
+            ("Instagram", lambda l: (l.social_links.instagram or "") if l.social_links else "", 22, "left"),
+            ("LinkedIn", lambda l: (l.social_links.linkedin or "") if l.social_links else "", 22, "left"),
+            ("WhatsApp", lambda l: (l.social_links.whatsapp or "") if l.social_links else "", 18, "center"),
+            ("CMS / Tech", lambda l: l.cms_tech or "", 14, "center"),
+        ])
+
+    columns.extend([
         ("Latitude", lambda l: l.lat if l.lat is not None else "", 12, "center"),
         ("Longitude", lambda l: l.lon if l.lon is not None else "", 12, "center"),
         ("Google Maps Link", lambda l: l.google_maps_url or "", 24, "left"),
         ("Place ID", lambda l: l.place_id, 28, "left"),
-    ]
+    ])
 
     # Professional Style Tokens
     header_fill = PatternFill(start_color="094CB2", end_color="094CB2", fill_type="solid")
