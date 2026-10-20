@@ -209,7 +209,66 @@ def run_pipeline(
 
     print(f"\n[Pipeline] Starting scrape for {len(plan.sub_locations)} sub-locations and {len(plan.keywords)} keywords ({total_tasks} total searches)...", flush=True)
 
-    # Page callback for real-time saving and quota tracking
+    # Helper: Clean, filter, commit 1-by-1 to SQLite, and stream live to user
+    def save_and_stream_lead(lead: LeadItem) -> bool:
+        nonlocal filtered_leads, job_status
+
+        if stop_event and stop_event.is_set():
+            job_status = "stopped"
+            return False
+
+        # Strictly enforce target leads limit
+        if effective_limit and len(filtered_leads) >= effective_limit:
+            if plan.target_leads and len(filtered_leads) >= plan.target_leads and effective_limit == plan.target_leads:
+                job_status = "completed"
+            else:
+                job_status = "limit_reached"
+            if stop_event and hasattr(stop_event, "set"):
+                stop_event.set()
+            return False
+
+        # Professional formatting and cleaning pass on lead
+        cleaned_lead = clean_lead_item(lead, country_code=plan.country_code)
+
+        # Must Have Email Filter: If enabled, skip leads without verified emails
+        if plan.filters.must_have_email:
+            if not cleaned_lead.emails:
+                print(f"    -> [Filter Skip: No Email] '{cleaned_lead.name}' has no verified public email. Continuing search...", flush=True)
+                return False
+
+        # Add to qualified filtered leads list
+        filtered_leads.append(cleaned_lead)
+
+        # Immediately save 1 lead to SQLite Temp Buffer
+        if job_id:
+            save_temp_leads_batch_sync(job_id, [cleaned_lead])
+            update_job_sync(job_id, leads_count=len(filtered_leads))
+            if session_owner and not is_authenticated:
+                increment_anonymous_quota_sync(session_owner, 1)
+            if on_batch:
+                try:
+                    on_batch(job_id, [cleaned_lead])
+                except Exception as cb_err:
+                    print(f"[Warning] on_batch callback error: {cb_err}")
+
+        email_str = f" | Email: {cleaned_lead.emails[0]}" if cleaned_lead.emails else ""
+        print(f"    [+1 Lead Harvested] #{len(filtered_leads)} '{cleaned_lead.name}' ({cleaned_lead.website_status}){email_str}", flush=True)
+
+        # Check quota limit or user requested target
+        if effective_limit and len(filtered_leads) >= effective_limit:
+            if plan.target_leads and len(filtered_leads) >= plan.target_leads and effective_limit == plan.target_leads:
+                print(f"[Target] Achieved requested target ({len(filtered_leads)}/{plan.target_leads} leads). Stopping dynamic loop.", flush=True)
+                job_status = "completed"
+            else:
+                print(f"[Quota] Reached lead limit ({len(filtered_leads)}/{effective_limit}). Stopping early.", flush=True)
+                job_status = "limit_reached"
+            if stop_event and hasattr(stop_event, "set"):
+                stop_event.set()
+            return False
+
+        return True
+
+    # Page callback for real-time saving, filtering, and quota tracking
     def handle_page_leads(new_raw_leads: List[LeadItem]):
         nonlocal all_raw_leads, filtered_leads, job_status
 
@@ -228,60 +287,39 @@ def run_pipeline(
         if not batch_candidates:
             return
 
-        # Strictly enforce target leads limit so we do not over-collect
-        if effective_limit:
-            remaining = effective_limit - len(filtered_leads)
-            if remaining <= 0:
-                if stop_event and hasattr(stop_event, "set"):
-                    stop_event.set()
-                return
-            if len(batch_candidates) > remaining:
-                batch_candidates = batch_candidates[:remaining]
-
-        # 1. IMMEDIATE WEBSITE DEEP SCRAPING (Before saving to DB or streaming to user)
+        # 1. IMMEDIATE WEBSITE DEEP SCRAPING (1-by-1 real-time streaming)
         if plan.enrichment.enabled and any(l.website_status == "Has Own Website" and l.website_url for l in batch_candidates):
-            sites_in_batch = sum(1 for l in batch_candidates if l.website_status == "Has Own Website" and l.website_url)
-            print(f"    -> [Website Scraper] Deep scraping {sites_in_batch} company websites across 5 pages (/contact, /about)...", flush=True)
-            if job_id:
-                update_job_sync(job_id, current_area=f"Deep scraping {sites_in_batch} websites for emails & contact info...")
+            enrichable = [l for l in batch_candidates if l.website_status == "Has Own Website" and l.website_url]
+            non_enrichable = [l for l in batch_candidates if l.website_status != "Has Own Website" or not l.website_url]
 
-            batch_candidates = enrich_leads_concurrently(
-                batch_candidates,
-                country_code=plan.country_code,
-                extract_email_opt=plan.enrichment.extract_emails,
-                extract_social_opt=plan.enrichment.extract_socials,
-                detect_cms_opt=plan.enrichment.detect_cms,
-                max_pages_per_site=5,
-                stop_event=stop_event,
-            )
+            # Stream non-website leads immediately if verified email is not required
+            for lead in non_enrichable:
+                if stop_event and stop_event.is_set():
+                    break
+                save_and_stream_lead(lead)
 
-        # 2. Professional formatting and cleaning pass on enriched batch
-        batch_candidates = [clean_lead_item(lead, country_code=plan.country_code) for lead in batch_candidates]
+            # Deep scrape company websites with concurrent streaming callback
+            if enrichable and not (stop_event and stop_event.is_set()):
+                print(f"    -> [Website Scraper] Deep scraping {len(enrichable)} websites for verified emails & contact info...", flush=True)
+                if job_id:
+                    update_job_sync(job_id, current_area=f"Deep scraping {len(enrichable)} websites for emails & contact info...")
 
-        for lead in batch_candidates:
-            filtered_leads.append(lead)
-
-        # 3. NOW AND ONLY NOW: Save 100% enriched leads to SQLite & stream to user
-        if job_id:
-            save_temp_leads_batch_sync(job_id, batch_candidates)
-            if session_owner and not is_authenticated:
-                increment_anonymous_quota_sync(session_owner, len(batch_candidates))
-            if on_batch:
-                try:
-                    on_batch(job_id, batch_candidates)
-                except Exception as cb_err:
-                    print(f"[Warning] on_batch callback error: {cb_err}")
-
-        # Check quota limit or user requested target
-        if effective_limit and len(filtered_leads) >= effective_limit:
-            if plan.target_leads and len(filtered_leads) >= plan.target_leads and effective_limit == plan.target_leads:
-                print(f"[Target] Achieved requested target ({len(filtered_leads)}/{plan.target_leads} leads). Stopping dynamic loop.", flush=True)
-                job_status = "completed"
-            else:
-                print(f"[Quota] Reached lead limit ({len(filtered_leads)}/{effective_limit}). Stopping early.", flush=True)
-                job_status = "limit_reached"
-            if stop_event and hasattr(stop_event, "set"):
-                stop_event.set()
+                enrich_leads_concurrently(
+                    enrichable,
+                    country_code=plan.country_code,
+                    extract_email_opt=plan.enrichment.extract_emails,
+                    extract_social_opt=plan.enrichment.extract_socials,
+                    detect_cms_opt=plan.enrichment.detect_cms,
+                    max_pages_per_site=2,
+                    stop_event=stop_event,
+                    on_lead_completed=save_and_stream_lead,
+                )
+        else:
+            # Google Maps only: Stream every lead 1-by-1 immediately
+            for lead in batch_candidates:
+                if stop_event and stop_event.is_set():
+                    break
+                save_and_stream_lead(lead)
 
     # Step 1: Scrape all locations and keywords
     for sub_loc in plan.sub_locations:

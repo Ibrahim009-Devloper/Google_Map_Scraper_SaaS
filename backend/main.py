@@ -140,6 +140,7 @@ class ScrapeStartRequest(BaseModel):
     provider: Optional[str] = Field(None, description="Preferred LLM provider: 'gemini' or 'groq'")
     target_leads: Optional[int] = Field(None, ge=1, le=10000, description="Requested target leads count (e.g. 50)")
     scrape_website: bool = Field(default=False, description="Whether to deep scrape business websites for emails/socials")
+    must_have_email: bool = Field(default=False, description="When true, only leads with verified business emails are retained")
 
 
 class RegisterRequest(BaseModel):
@@ -436,11 +437,13 @@ async def start_scraping_job(
             action_plan.enrichment.extract_emails = False
             action_plan.enrichment.extract_socials = False
             action_plan.enrichment.detect_cms = False
+            action_plan.filters.must_have_email = False
         else:
             action_plan.enrichment.enabled = True
             action_plan.enrichment.extract_emails = True
             action_plan.enrichment.extract_socials = True
             action_plan.enrichment.detect_cms = True
+            action_plan.filters.must_have_email = bool(payload.must_have_email)
     except Exception as plan_err:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
@@ -608,7 +611,7 @@ async def stream_scraping_events(job_id: str):
                     pass
                 break
 
-            await asyncio.sleep(0.8)
+            await asyncio.sleep(0.4)
 
     return StreamingResponse(
         event_generator(),

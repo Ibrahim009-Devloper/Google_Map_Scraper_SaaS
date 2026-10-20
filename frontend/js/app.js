@@ -111,6 +111,20 @@ function setupInputListeners() {
     }
   });
 
+  const scrapeWebsitesToggle = document.getElementById("scrapeWebsitesToggle");
+  const mustHaveEmailWrapper = document.getElementById("mustHaveEmailWrapper");
+  if (scrapeWebsitesToggle && mustHaveEmailWrapper) {
+    scrapeWebsitesToggle.addEventListener("change", () => {
+      if (scrapeWebsitesToggle.checked) {
+        mustHaveEmailWrapper.classList.remove("hidden");
+        mustHaveEmailWrapper.classList.add("inline-flex");
+      } else {
+        mustHaveEmailWrapper.classList.add("hidden");
+        mustHaveEmailWrapper.classList.remove("inline-flex");
+      }
+    });
+  }
+
   scraperPrompt.addEventListener("input", () => {
     const val = scraperPrompt.value;
     const len = val.length;
@@ -546,6 +560,8 @@ async function startScrapingJob() {
 
   const scrapeWebsitesToggle = document.getElementById("scrapeWebsitesToggle");
   const scrapeWebsite = scrapeWebsitesToggle ? scrapeWebsitesToggle.checked : false;
+  const mustHaveEmailToggle = document.getElementById("mustHaveEmailToggle");
+  const mustHaveEmail = scrapeWebsite && mustHaveEmailToggle ? mustHaveEmailToggle.checked : false;
 
   progressTargetText.innerText = `of ${targetQuota} target entities`;
 
@@ -558,7 +574,7 @@ async function startScrapingJob() {
   renderEmptyState("Initializing AI Geo-Planner & reverse protobuf query...");
 
   appendTerminalLog(`[AI/PLAN] Dispatching user prompt to Geo-Planner: "${prompt.slice(0, 60)}..."`);
-  appendTerminalLog(`[CONFIG] Target: ${targetQuota} leads | Website Scraping: ${scrapeWebsite ? "ENABLED (Extract emails & socials)" : "DISABLED (Fast Google Maps Only)"}`);
+  appendTerminalLog(`[CONFIG] Target: ${targetQuota} leads | Website Scraping: ${scrapeWebsite ? `ENABLED (Emails & Socials | Filter: ${mustHaveEmail ? "Verified Emails Only" : "All Sites"})` : "DISABLED (Fast Google Maps Only)"}`);
 
   try {
     const headers = { "Content-Type": "application/json" };
@@ -574,6 +590,7 @@ async function startScrapingJob() {
         provider,
         target_leads: targetQuota,
         scrape_website: scrapeWebsite,
+        must_have_email: mustHaveEmail,
       }),
     });
 

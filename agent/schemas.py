@@ -21,6 +21,7 @@ class FilterConfig(BaseModel):
         description="'no_website' (includes Social Link Only), 'has_real_website', or 'any'"
     )
     must_have_phone: bool = Field(default=False, description="Require a phone number")
+    must_have_email: bool = Field(default=False, description="Require at least one verified email when website enrichment is enabled")
     min_rating: float = Field(default=0.0, description="Minimum Google Maps rating (0.0 to 5.0)")
     min_reviews: int = Field(default=0, description="Minimum number of user reviews")
     max_pages_per_search: int = Field(

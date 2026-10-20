@@ -20,7 +20,7 @@ import html
 import re
 from urllib.parse import urljoin, urlparse, unquote
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from typing import List, Optional, Set, Tuple, Dict, Any
+from typing import List, Optional, Set, Tuple, Dict, Any, Callable
 
 from bs4 import BeautifulSoup
 from curl_cffi import requests
@@ -491,10 +491,11 @@ def discover_target_pages(soup: BeautifulSoup, base_url: str, max_pages: int = 3
     return target_queue[:max_pages]
 
 
-def fetch_html(url: str, timeout: int = 6) -> Optional[str]:
+def fetch_html(url: str, timeout: int = 6, session: Optional[Any] = None) -> Optional[str]:
     """
     Fetches HTML content with curl_cffi using chrome124 TLS fingerprint.
-    Fast 6-second timeout ensures lightning responsiveness and prevents dead sites
+    Reuses session if provided to keep connections warm and reduce latency.
+    Fast timeout ensures lightning responsiveness and prevents dead sites
     from hanging scraper worker threads.
     """
     if not url:
@@ -513,8 +514,10 @@ def fetch_html(url: str, timeout: int = 6) -> Optional[str]:
         "Sec-Fetch-User": "?1",
     }
 
+    requester = session if session is not None else requests
+
     try:
-        response = requests.get(
+        response = requester.get(
             clean_url,
             impersonate=DEFAULT_IMPERSONATE,
             timeout=timeout,
@@ -529,7 +532,7 @@ def fetch_html(url: str, timeout: int = 6) -> Optional[str]:
         if clean_url.startswith("https://"):
             try:
                 http_url = clean_url.replace("https://", "http://", 1)
-                response = requests.get(
+                response = requester.get(
                     http_url,
                     impersonate=DEFAULT_IMPERSONATE,
                     timeout=timeout,
@@ -551,16 +554,16 @@ def enrich_single_lead(
     extract_email_opt: bool = True,
     extract_social_opt: bool = True,
     detect_cms_opt: bool = True,
-    max_pages: int = 3,
+    max_pages: int = 2,
 ) -> LeadItem:
     """
     High-Speed website deep-scraper for a single business:
-    1. Fetches Homepage ('/') with 6s timeout.
+    1. Fetches Homepage ('/') with 6s timeout and keep-alive Session.
     2. Extracts CMS, socials, phone, and emails.
     3. EARLY STOPPING: If Homepage already contains a verified domain email,
-       subpage crawling is skipped immediately for 5x speed boost!
+       subpage crawling is skipped immediately for maximum speed.
     4. If no email on Homepage, discovers candidate /contact and /about pages
-       and fetches them concurrently in parallel.
+       and fetches them concurrently in parallel with keep-alive socket reuse.
     5. Saves strictly ONE single highest-ranking authentic email.
     """
     if lead.website_status != "Has Own Website" or not lead.website_url:
@@ -569,67 +572,81 @@ def enrich_single_lead(
     clean_url = clean_website_url(lead.website_url) or lead.website_url
     lead.website_url = clean_url
 
-    # 1. Fetch Homepage
-    html_home = fetch_html(clean_url, timeout=6)
-    if not html_home:
-        return lead
+    session = None
+    try:
+        session = requests.Session(impersonate=DEFAULT_IMPERSONATE)
+    except Exception:
+        session = None
 
-    soup_home = BeautifulSoup(html_home, "lxml")
+    try:
+        # 1. Fetch Homepage
+        html_home = fetch_html(clean_url, timeout=6, session=session)
+        if not html_home:
+            return lead
 
-    # Extract CMS from homepage
-    if detect_cms_opt and not lead.cms_tech:
-        lead.cms_tech = detect_cms(html_home)
+        soup_home = BeautifulSoup(html_home, "lxml")
 
-    # Extract Socials from homepage
-    if extract_social_opt:
-        lead.social_links = extract_socials(soup_home, lead.social_links)
+        # Extract CMS from homepage
+        if detect_cms_opt and not lead.cms_tech:
+            lead.cms_tech = detect_cms(html_home)
 
-    # Extract Phone from website if missing from Google Maps
-    if not lead.phone:
-        lead.phone = extract_phone_from_soup(soup_home, country_code=country_code)
+        # Extract Socials from homepage
+        if extract_social_opt:
+            lead.social_links = extract_socials(soup_home, lead.social_links)
 
-    # Extract Emails from homepage
-    all_emails: Set[str] = set()
-    if extract_email_opt:
-        all_emails.update(extract_emails_from_page(soup_home, html_home))
+        # Extract Phone from website if missing from Google Maps
+        if not lead.phone:
+            lead.phone = extract_phone_from_soup(soup_home, country_code=country_code)
 
-    # Check if homepage already yielded a high-confidence matching domain email
-    has_domain_email = False
-    if extract_email_opt and all_emails:
-        site_domain = extract_domain(clean_url)
-        for em in all_emails:
-            if is_valid_email(em):
-                parts = em.split("@")
-                if len(parts) == 2 and site_domain and (site_domain in parts[1] or parts[1].endswith(site_domain)):
-                    has_domain_email = True
-                    break
+        # Extract Emails from homepage
+        all_emails: Set[str] = set()
+        if extract_email_opt:
+            all_emails.update(extract_emails_from_page(soup_home, html_home))
 
-    # 2. Early Stop: Only crawl subpages if we don't have a verified domain email yet!
-    if not has_domain_email and (extract_email_opt or extract_social_opt):
-        subpage_urls = discover_target_pages(soup_home, clean_url, max_pages=max_pages)
-        if subpage_urls:
-            with ThreadPoolExecutor(max_workers=min(3, len(subpage_urls))) as sub_exec:
-                future_to_url = {sub_exec.submit(fetch_html, u, 5): u for u in subpage_urls}
-                for fut in as_completed(future_to_url):
-                    try:
-                        html_sub = fut.result()
-                        if html_sub:
-                            soup_sub = BeautifulSoup(html_sub, "lxml")
-                            if extract_email_opt:
-                                sub_emails = extract_emails_from_page(soup_sub, html_sub)
-                                all_emails.update(sub_emails)
-                            if extract_social_opt:
-                                lead.social_links = extract_socials(soup_sub, lead.social_links)
-                            if not lead.phone:
-                                lead.phone = extract_phone_from_soup(soup_sub, country_code=country_code)
-                            if detect_cms_opt and not lead.cms_tech:
-                                lead.cms_tech = detect_cms(html_sub)
-                    except Exception:
-                        pass
+        # Check if homepage already yielded a high-confidence matching domain email
+        has_domain_email = False
+        if extract_email_opt and all_emails:
+            site_domain = extract_domain(clean_url)
+            for em in all_emails:
+                if is_valid_email(em):
+                    parts = em.split("@")
+                    if len(parts) == 2 and site_domain and (site_domain in parts[1] or parts[1].endswith(site_domain)):
+                        has_domain_email = True
+                        break
 
-    # 3. Select strictly ONE single best email (no junk, no placeholders, no long lists)
-    if extract_email_opt:
-        lead.emails = select_best_single_email(all_emails, clean_url)
+        # 2. Early Stop: Only crawl subpages if we don't have a verified domain email yet!
+        if not has_domain_email and (extract_email_opt or extract_social_opt):
+            subpage_urls = discover_target_pages(soup_home, clean_url, max_pages=max_pages)
+            if subpage_urls:
+                with ThreadPoolExecutor(max_workers=min(2, len(subpage_urls))) as sub_exec:
+                    future_to_url = {sub_exec.submit(fetch_html, u, 4, session): u for u in subpage_urls}
+                    for fut in as_completed(future_to_url):
+                        try:
+                            html_sub = fut.result()
+                            if html_sub:
+                                soup_sub = BeautifulSoup(html_sub, "lxml")
+                                if extract_email_opt:
+                                    sub_emails = extract_emails_from_page(soup_sub, html_sub)
+                                    all_emails.update(sub_emails)
+                                if extract_social_opt:
+                                    lead.social_links = extract_socials(soup_sub, lead.social_links)
+                                if not lead.phone:
+                                    lead.phone = extract_phone_from_soup(soup_sub, country_code=country_code)
+                                if detect_cms_opt and not lead.cms_tech:
+                                    lead.cms_tech = detect_cms(html_sub)
+                        except Exception:
+                            pass
+
+        # 3. Select strictly ONE single best email (no junk, no placeholders, no long lists)
+        if extract_email_opt:
+            lead.emails = select_best_single_email(all_emails, clean_url)
+
+    finally:
+        if session:
+            try:
+                session.close()
+            except Exception:
+                pass
 
     return lead
 
@@ -641,16 +658,22 @@ def enrich_leads_concurrently(
     extract_email_opt: bool = True,
     extract_social_opt: bool = True,
     detect_cms_opt: bool = True,
-    max_pages_per_site: int = 3,
+    max_pages_per_site: int = 2,
     stop_event: Optional[Any] = None,
+    on_lead_completed: Optional[Callable[[LeadItem], None]] = None,
 ) -> List[LeadItem]:
     """
     Enriches multiple leads in parallel using ThreadPoolExecutor.
-    Leads without their own websites are skipped instantly.
+    Supports real-time per-lead callback (on_lead_completed) as each individual site finishes.
     Supports graceful cancellation via stop_event.
     """
     leads_to_enrich = [l for l in leads if l.website_status == "Has Own Website" and l.website_url]
     if not leads_to_enrich:
+        if on_lead_completed:
+            for l in leads:
+                if stop_event and stop_event.is_set():
+                    break
+                on_lead_completed(l)
         return leads
 
     lead_map = {l.place_id: l for l in leads}
@@ -678,7 +701,11 @@ def enrich_leads_concurrently(
             try:
                 enriched_lead = future.result()
                 lead_map[pid] = enriched_lead
+                if on_lead_completed:
+                    on_lead_completed(enriched_lead)
             except Exception as e:
                 print(f"[Warning] Error enriching lead {pid}: {e}")
+                if on_lead_completed and pid in lead_map:
+                    on_lead_completed(lead_map[pid])
 
     return [lead_map[l.place_id] for l in leads]

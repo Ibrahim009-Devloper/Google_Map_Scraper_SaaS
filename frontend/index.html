@@ -338,6 +338,15 @@
                     <span>Scrape Websites (Emails &amp; Socials)</span>
                   </span>
                 </label>
+
+                <!-- Verified Email Only Toggle Chip (Appears when Website Scraping is enabled) -->
+                <label id="mustHaveEmailWrapper" class="hidden inline-flex items-center gap-2 px-3 py-1.5 rounded-lg bg-surface-container hover:bg-surface-container-high transition-colors text-xs font-label text-on-surface cursor-pointer select-none border border-transparent hover:border-surface-container-highest" title="Filters out businesses without emails, ensuring 100% of collected leads contain verified email addresses.">
+                  <input type="checkbox" id="mustHaveEmailToggle" checked class="w-3.5 h-3.5 text-primary rounded border-outline-variant focus:ring-primary focus:ring-1 cursor-pointer">
+                  <span class="flex items-center gap-1 font-medium">
+                    <span class="material-symbols-outlined text-[15px] text-emerald-600">mark_email_read</span>
+                    <span>Verified Emails Only</span>
+                  </span>
+                </label>
               </div>
 
               <!-- Start / Stop Action Buttons -->
