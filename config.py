@@ -34,13 +34,26 @@ DEFAULT_LLM_PROVIDER = os.getenv("DEFAULT_LLM_PROVIDER", "gemini").lower().strip
 GEMINI_MODEL = "gemini-2.5-flash"
 GROQ_MODEL = os.getenv("GROQ_MODEL", "openai/gpt-oss-120b")
 
-# Supabase Configuration
-SUPABASE_URL = os.getenv("SUPABASE_URL", "").strip()
-SUPABASE_KEY = os.getenv("SUPABASE_KEY", "").strip()
-SUPABASE_ANON_KEY = os.getenv("SUPABASE_ANON_KEY", "").strip()
-GOOGLE_CLIENT_ID = os.getenv("GOOGLE_CLIENT_ID", "").strip()
+def clean_env_str(val: Optional[str]) -> str:
+    """Strips outer quotes, whitespace, and formatting anomalies from environment variables."""
+    if not val:
+        return ""
+    cleaned = str(val).strip().strip("\"'").strip()
+    if cleaned.lower().startswith("bearer "):
+        cleaned = cleaned[7:].strip()
+    # If the user left dummy placeholder text from .env.example, treat as unset
+    if "your_supabase_" in cleaned or "your_gemini_" in cleaned or "your_groq_" in cleaned:
+        return ""
+    return cleaned
 
-# If SUPABASE_ANON_KEY was not explicitly provided, check if SUPABASE_KEY is an anon key
+
+# Supabase Configuration
+SUPABASE_URL = clean_env_str(os.getenv("SUPABASE_URL", "")).rstrip("/")
+SUPABASE_KEY = clean_env_str(os.getenv("SUPABASE_KEY", ""))
+SUPABASE_ANON_KEY = clean_env_str(os.getenv("SUPABASE_ANON_KEY", ""))
+GOOGLE_CLIENT_ID = clean_env_str(os.getenv("GOOGLE_CLIENT_ID", ""))
+
+# If SUPABASE_ANON_KEY was not explicitly provided or invalid, check if SUPABASE_KEY is an anon key
 if not SUPABASE_ANON_KEY and SUPABASE_KEY:
     try:
         import base64

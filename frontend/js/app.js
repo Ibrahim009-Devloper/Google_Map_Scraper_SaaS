@@ -1131,11 +1131,18 @@ async function initSupabaseClient() {
     const res = await fetch("/api/auth/config");
     if (res.ok) {
       const config = await res.json();
-      if (!config.supabase_anon_key) {
-        console.warn("[Supabase] SUPABASE_ANON_KEY is not configured in backend environment. Client-side SDK will use resilient backend auth endpoints.");
+      const anonKey = (config.supabase_anon_key || "").trim().replace(/^["']|["']$/g, "");
+      const supabaseUrl = (config.supabase_url || "").trim().replace(/^["']|["']$/g, "").replace(/\/+$/, "");
+
+      // A valid Supabase anon key must be a 3-part JWT starting with 'ey'
+      const isValidJwt = anonKey.startsWith("ey") && anonKey.split(".").length === 3;
+
+      if (!isValidJwt && anonKey) {
+        console.warn("[Supabase] SUPABASE_ANON_KEY does not look like a valid JWT token. Client-side SDK skipped; resilient backend auth will be used.");
       }
-      if (window.supabase && config.supabase_url && config.supabase_anon_key) {
-        supabaseClient = window.supabase.createClient(config.supabase_url, config.supabase_anon_key);
+
+      if (window.supabase && supabaseUrl && isValidJwt) {
+        supabaseClient = window.supabase.createClient(supabaseUrl, anonKey);
 
         // Listen for Supabase Auth state transitions
         supabaseClient.auth.onAuthStateChange(async (event, session) => {
@@ -1274,12 +1281,17 @@ async function handleEmailSignIn(event) {
     // 1. Try client-side Supabase SDK if initialized
     if (supabaseClient) {
       const { data, error } = await supabaseClient.auth.signInWithPassword({ email, password });
-      if (error) {
-        authError = error.message;
-      } else if (data && data.session) {
+      if (!error && data && data.session) {
         authToken = data.session.access_token;
         currentUser = data.user;
         authSuccess = true;
+      } else if (error) {
+        // If client-side failed due to invalid API key or network, suppress it so backend fallback can attempt sign in
+        if (error.message && error.message.toLowerCase().includes("api key")) {
+          console.warn("[Supabase] Client-side SDK returned 'Invalid API key'. Retrying via backend /api/auth/login...");
+        } else {
+          authError = error.message;
+        }
       }
     }
 

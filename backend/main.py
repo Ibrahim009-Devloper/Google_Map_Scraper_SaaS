@@ -249,6 +249,11 @@ async def login_user(payload: LoginRequest):
         raise
     except Exception as e:
         err_msg = str(e)
+        if "api key" in err_msg.lower():
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail="Supabase API key is invalid. Please check SUPABASE_KEY and SUPABASE_ANON_KEY in your hosting environment variables."
+            )
         if "invalid" in err_msg.lower() or "credentials" in err_msg.lower():
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED,
