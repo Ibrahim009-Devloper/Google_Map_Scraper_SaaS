@@ -152,6 +152,10 @@ def run_pipeline(
     """
     init_db_sync()
 
+    if not plan.sub_locations or len(plan.sub_locations) == 0:
+        from agent.planner import get_default_sub_locations
+        plan.sub_locations = get_default_sub_locations(plan.country_code or "bd")
+
     # Target limit & Anonymous user quota enforcement
     effective_limit = max_leads_limit
     if plan.target_leads and plan.target_leads > 0:

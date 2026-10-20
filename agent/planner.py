@@ -7,7 +7,7 @@ import os
 import json
 import re
 import datetime
-from typing import Optional
+from typing import Optional, List
 
 from config import (
     GEMINI_API_KEY,
@@ -24,7 +24,12 @@ Your job is to convert a user's natural language lead request into a strict JSON
 
 RULES:
 1. KEYWORDS: Generate 2 to 4 highly relevant Google Maps business category keywords based on the user's request.
-2. GEO-SPLITTING (CRITICAL): Google Maps limits results to 120 per search area. If the user specifies a large city or region (e.g., "Dhaka", "Chittagong", "London", "New York"), you MUST break it down into 10 to 20 smaller neighborhoods/sub-areas (e.g. for Dhaka: Dhanmondi, Gulshan, Banani, Uttara, Mirpur, Motijheel, Khilgaon, Mohammadpur, Badda, Bashundhara, Mohakhali, Old Dhaka, etc.) with accurate center Latitude (`lat`), Longitude (`lon`), and `radius` in meters (usually 2500 to 4000). If the user already specified a small neighborhood (e.g., "Banani"), return 1 to 2 sub-locations covering that neighborhood.
+2. GEO-SPLITTING & SUB-LOCATIONS (CRITICAL - MUST NEVER BE EMPTY):
+   - "sub_locations" MUST NEVER BE EMPTY! You MUST ALWAYS return at least 3 to 15 sub-locations with valid center Latitude (`lat`), Longitude (`lon`), and `radius` in meters (usually 2500 to 4000).
+   - If the user specifies a city or neighborhood (e.g. "Dhaka", "Banani", "London", "New York", "Mumbai"), break it down into 5 to 15 smaller neighborhoods/sub-areas.
+   - If the user specifies a country or nationality (e.g. "India", "Indian", "USA", "American", "Canada", "UK", "Bangladesh") without a specific city (e.g. "Indian restaurants", "Dentists in USA"), generate 5 to 10 sub-locations covering major metropolitan cities of that country (e.g. for India: Delhi, Mumbai, Bangalore, Hyderabad, Chennai, Kolkata, Pune; for USA: New York, Los Angeles, Chicago, Houston, Miami; for UK: London, Manchester, Birmingham, etc.)!
+   - If the user specifies NO location at all (e.g. "Dentists", "IT companies", "20 restaurants"), infer the country from the query context or default to Bangladesh (Dhaka: Dhanmondi, Gulshan, Banani, Uttara, Mirpur, etc.).
+   - UNDER NO CIRCUMSTANCES should "sub_locations" be an empty array `[]`!
 3. TARGET LEADS (CRITICAL):
    - If the user specifies an exact quantity of leads in natural language (e.g., "50 ta lead", "50টি রেস্টুরেন্ট", "50 restaurants", "100 companies", "20 leads"), extract this integer into "target_leads" (e.g. 50).
    - If no specific number is mentioned, set "target_leads": null.
@@ -184,17 +189,47 @@ def extract_target_count(prompt: str) -> Optional[int]:
     return None
 
 
-def create_offline_fallback_plan(user_prompt: str) -> ActionPlan:
-    """Provides a deterministic fallback plan if no API key is provided."""
-    prompt_lower = user_prompt.lower()
-    
-    # Check if user wants no website
-    is_no_website = any(w in prompt_lower for w in ["no website", "ওয়েবসাইট নেই", "without website", "website chara"])
-
-    # Determine Country & Micro-zones
-    if any(w in prompt_lower for w in ["canada", "toronto", "vancouver", "montreal", "calgary", "ottawa", "ontario", "quebec", "alberta"]):
-        country_code = "ca"
-        sub_locations = [
+def get_default_sub_locations(country_code: str = "bd") -> List[SubLocation]:
+    """
+    Returns verified, high-precision metropolitan micro-locations for a given country code.
+    Guarantees that sub_locations is never empty under any circumstance.
+    """
+    code = (country_code or "bd").lower().strip()
+    if code in ("in", "ind", "india"):
+        return [
+            SubLocation(area_name="Connaught Place, New Delhi", lat=28.6315, lon=77.2167, radius=3500.0),
+            SubLocation(area_name="Bandra West, Mumbai", lat=19.0596, lon=72.8295, radius=3500.0),
+            SubLocation(area_name="Indiranagar, Bangalore", lat=12.9784, lon=77.6408, radius=3500.0),
+            SubLocation(area_name="Koramangala, Bangalore", lat=12.9352, lon=77.6245, radius=3500.0),
+            SubLocation(area_name="Banjara Hills, Hyderabad", lat=17.4156, lon=78.4357, radius=3500.0),
+            SubLocation(area_name="T. Nagar, Chennai", lat=13.0418, lon=80.2341, radius=3500.0),
+            SubLocation(area_name="Park Street, Kolkata", lat=22.5519, lon=88.3516, radius=3500.0),
+            SubLocation(area_name="Koregaon Park, Pune", lat=18.5362, lon=73.8940, radius=3500.0),
+            SubLocation(area_name="SG Highway, Ahmedabad", lat=23.0525, lon=72.5086, radius=3500.0),
+            SubLocation(area_name="C Scheme, Jaipur", lat=26.9089, lon=75.8016, radius=3500.0),
+        ]
+    elif code in ("us", "usa"):
+        return [
+            SubLocation(area_name="Midtown Manhattan, New York, NY", lat=40.7580, lon=-73.9855, radius=3500.0),
+            SubLocation(area_name="Williamsburg, Brooklyn, NY", lat=40.7081, lon=-73.9571, radius=3500.0),
+            SubLocation(area_name="Downtown Los Angeles, CA", lat=34.0407, lon=-118.2468, radius=3500.0),
+            SubLocation(area_name="Chicago Loop, IL", lat=41.8781, lon=-87.6298, radius=3500.0),
+            SubLocation(area_name="Downtown Houston, TX", lat=29.7604, lon=-95.3698, radius=3500.0),
+            SubLocation(area_name="Brickell, Miami, FL", lat=25.7617, lon=-80.1918, radius=3500.0),
+            SubLocation(area_name="Downtown Dallas, TX", lat=32.7767, lon=-96.7970, radius=3500.0),
+            SubLocation(area_name="SoMa, San Francisco, CA", lat=37.7785, lon=-122.4056, radius=3500.0),
+        ]
+    elif code in ("gb", "uk"):
+        return [
+            SubLocation(area_name="Central London, UK", lat=51.5074, lon=-0.1278, radius=3500.0),
+            SubLocation(area_name="Westminster, London, UK", lat=51.4975, lon=-0.1357, radius=3000.0),
+            SubLocation(area_name="Camden, London, UK", lat=51.5455, lon=-0.1417, radius=3000.0),
+            SubLocation(area_name="Soho, London, UK", lat=51.5136, lon=-0.1365, radius=2500.0),
+            SubLocation(area_name="Manchester City Centre, UK", lat=53.4808, lon=-2.2426, radius=3500.0),
+            SubLocation(area_name="Birmingham City Centre, UK", lat=52.4862, lon=-1.8904, radius=3500.0),
+        ]
+    elif code in ("ca", "can", "canada"):
+        return [
             SubLocation(area_name="Downtown Toronto, ON", lat=43.6532, lon=-79.3832, radius=3500.0),
             SubLocation(area_name="North York, Toronto, ON", lat=43.7615, lon=-79.4111, radius=3500.0),
             SubLocation(area_name="Scarborough, Toronto, ON", lat=43.7764, lon=-79.2318, radius=3500.0),
@@ -202,29 +237,24 @@ def create_offline_fallback_plan(user_prompt: str) -> ActionPlan:
             SubLocation(area_name="Downtown Vancouver, BC", lat=49.2827, lon=-123.1207, radius=3500.0),
             SubLocation(area_name="Downtown Montreal, QC", lat=45.5017, lon=-73.5673, radius=3500.0),
             SubLocation(area_name="Downtown Calgary, AB", lat=51.0447, lon=-114.0719, radius=3500.0),
-            SubLocation(area_name="Downtown Ottawa, ON", lat=45.4215, lon=-75.6972, radius=3500.0),
         ]
-    elif any(w in prompt_lower for w in ["usa", "united states", "new york", "los angeles", "chicago", "miami", "houston", "texas", "california", "florida"]):
-        country_code = "us"
-        sub_locations = [
-            SubLocation(area_name="Manhattan, New York, NY", lat=40.7831, lon=-73.9712, radius=3500.0),
-            SubLocation(area_name="Brooklyn, New York, NY", lat=40.6782, lon=-73.9442, radius=3500.0),
-            SubLocation(area_name="Downtown Los Angeles, CA", lat=34.0407, lon=-118.2468, radius=3500.0),
-            SubLocation(area_name="Chicago Loop, IL", lat=41.8781, lon=-87.6298, radius=3500.0),
-            SubLocation(area_name="Downtown Miami, FL", lat=25.7617, lon=-80.1918, radius=3500.0),
-            SubLocation(area_name="Houston Downtown, TX", lat=29.7604, lon=-95.3698, radius=3500.0),
+    elif code in ("au", "aus", "australia"):
+        return [
+            SubLocation(area_name="Sydney CBD, NSW", lat=-33.8688, lon=151.2093, radius=3500.0),
+            SubLocation(area_name="Melbourne CBD, VIC", lat=-37.8136, lon=144.9631, radius=3500.0),
+            SubLocation(area_name="Brisbane City, QLD", lat=-27.4698, lon=153.0251, radius=3500.0),
+            SubLocation(area_name="Perth CBD, WA", lat=-31.9505, lon=115.8605, radius=3500.0),
         ]
-    elif any(w in prompt_lower for w in ["uk", "united kingdom", "london", "manchester", "birmingham", "england"]):
-        country_code = "gb"
-        sub_locations = [
-            SubLocation(area_name="Central London, UK", lat=51.5074, lon=-0.1278, radius=3500.0),
-            SubLocation(area_name="Westminster, London, UK", lat=51.4975, lon=-0.1357, radius=3000.0),
-            SubLocation(area_name="Camden, London, UK", lat=51.5455, lon=-0.1417, radius=3000.0),
-            SubLocation(area_name="Manchester City Centre, UK", lat=53.4808, lon=-2.2426, radius=3500.0),
+    elif code in ("ae", "uae", "dubai"):
+        return [
+            SubLocation(area_name="Downtown Dubai, UAE", lat=25.1972, lon=55.2744, radius=3500.0),
+            SubLocation(area_name="Dubai Marina, UAE", lat=25.0805, lon=55.1403, radius=3500.0),
+            SubLocation(area_name="Deira, Dubai, UAE", lat=25.2697, lon=55.3095, radius=3500.0),
+            SubLocation(area_name="Abu Dhabi Downtown, UAE", lat=24.4539, lon=54.3773, radius=4000.0),
         ]
     else:
-        country_code = "bd"
-        sub_locations = [
+        # Default: Bangladesh major commercial hubs
+        return [
             SubLocation(area_name="Dhanmondi, Dhaka", lat=23.7461, lon=90.3742, radius=3000.0),
             SubLocation(area_name="Gulshan, Dhaka", lat=23.7925, lon=90.4078, radius=3500.0),
             SubLocation(area_name="Banani, Dhaka", lat=23.7937, lon=90.4047, radius=3000.0),
@@ -234,8 +264,34 @@ def create_offline_fallback_plan(user_prompt: str) -> ActionPlan:
             SubLocation(area_name="Khilgaon, Dhaka", lat=23.7516, lon=90.4239, radius=3000.0),
             SubLocation(area_name="Badda, Dhaka", lat=23.7805, lon=90.4267, radius=3000.0),
             SubLocation(area_name="Motijheel, Dhaka", lat=23.7330, lon=90.4172, radius=3000.0),
-            SubLocation(area_name="Old Dhaka, Dhaka", lat=23.7104, lon=90.4074, radius=3000.0),
+            SubLocation(area_name="Agrabad, Chittagong", lat=22.3278, lon=91.8123, radius=3500.0),
         ]
+
+
+def create_offline_fallback_plan(user_prompt: str) -> ActionPlan:
+    """Provides a deterministic fallback plan if no API key is provided."""
+    prompt_lower = user_prompt.lower()
+    
+    # Check if user wants no website
+    is_no_website = any(w in prompt_lower for w in ["no website", "ওয়েবসাইট নেই", "without website", "website chara"])
+
+    # Determine Country & Micro-zones
+    if any(w in prompt_lower for w in ["india", "indian", "delhi", "mumbai", "bangalore", "bengaluru", "hyderabad", "chennai", "kolkata", "pune", "ahmedabad", "jaipur"]):
+        country_code = "in"
+    elif any(w in prompt_lower for w in ["canada", "toronto", "vancouver", "montreal", "calgary", "ottawa", "ontario", "quebec", "alberta"]):
+        country_code = "ca"
+    elif any(w in prompt_lower for w in ["usa", "united states", "new york", "los angeles", "chicago", "miami", "houston", "texas", "california", "florida"]):
+        country_code = "us"
+    elif any(w in prompt_lower for w in ["uk", "united kingdom", "london", "manchester", "birmingham", "england"]):
+        country_code = "gb"
+    elif any(w in prompt_lower for w in ["australia", "sydney", "melbourne", "brisbane", "perth"]):
+        country_code = "au"
+    elif any(w in prompt_lower for w in ["uae", "dubai", "abu dhabi", "sharjah"]):
+        country_code = "ae"
+    else:
+        country_code = "bd"
+
+    sub_locations = get_default_sub_locations(country_code)
 
     # Dynamic Keywords
     if any(w in prompt_lower for w in ["dentist", "dental", "clinic"]):
@@ -325,12 +381,23 @@ def generate_plan(
             or "ওয়েবসাইট ছাড়া" in user_prompt
         )
         # Country detection post-processing
-        if any(w in prompt_lower for w in ["canada", "toronto", "vancouver", "montreal", "calgary", "ottawa", "ontario", "quebec"]):
+        if any(w in prompt_lower for w in ["india", "indian", "delhi", "mumbai", "bangalore", "bengaluru", "hyderabad", "chennai", "kolkata"]):
+            plan.country_code = "in"
+        elif any(w in prompt_lower for w in ["canada", "toronto", "vancouver", "montreal", "calgary", "ottawa", "ontario", "quebec"]):
             plan.country_code = "ca"
         elif any(w in prompt_lower for w in ["usa", "united states", "new york", "los angeles", "chicago", "miami", "houston", "texas", "california", "florida"]):
             plan.country_code = "us"
         elif any(w in prompt_lower for w in ["uk", "united kingdom", "london", "manchester", "birmingham", "england"]):
             plan.country_code = "gb"
+        elif any(w in prompt_lower for w in ["australia", "sydney", "melbourne", "brisbane", "perth"]):
+            plan.country_code = "au"
+        elif any(w in prompt_lower for w in ["uae", "dubai", "abu dhabi", "sharjah"]):
+            plan.country_code = "ae"
+
+        # CRITICAL SAFETY NET: sub_locations MUST NEVER BE EMPTY!
+        if not plan.sub_locations or len(plan.sub_locations) == 0:
+            print(f"[Warning] Plan returned 0 sub_locations for prompt '{user_prompt}'. Auto-generating major micro-zones for '{plan.country_code}'...", flush=True)
+            plan.sub_locations = get_default_sub_locations(plan.country_code)
 
         if not is_no_website and plan.filters.website_requirement != "no_website":
             plan.enrichment.enabled = True

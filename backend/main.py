@@ -427,6 +427,10 @@ async def start_scraping_job(
     # Step 1: AI Planner
     try:
         action_plan = generate_plan(payload.prompt, provider=payload.provider)
+        if not action_plan.sub_locations or len(action_plan.sub_locations) == 0:
+            from agent.planner import get_default_sub_locations
+            action_plan.sub_locations = get_default_sub_locations(action_plan.country_code or "bd")
+
         target_to_use = effective_limit_for_job or payload.target_leads
         if target_to_use and target_to_use > 0:
             action_plan.target_leads = target_to_use
