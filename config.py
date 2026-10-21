@@ -23,7 +23,7 @@ DATA_DIR.mkdir(parents=True, exist_ok=True)
 
 # Database & Quota Settings
 TEMP_DB_PATH = DATA_DIR / "temp_cache.db"
-ANONYMOUS_LEAD_LIMIT = 100
+ANONYMOUS_LEAD_LIMIT = 1000
 ANONYMOUS_JOB_LIMIT = 1
 
 # LLM Configuration

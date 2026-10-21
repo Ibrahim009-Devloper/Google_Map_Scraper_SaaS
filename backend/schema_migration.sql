@@ -32,8 +32,11 @@ ON CONFLICT (id) DO UPDATE SET
 
 -- Insert Pro Plan placeholder for upcoming payment tier
 INSERT INTO public.plans (id, name, leads_per_day, jobs_per_day, leads_per_job, website_enrichment_enabled, price_bdt, price_usd)
-VALUES ('pro', 'Pro Harvester Plan', 10000, 50, 1000, true, 2500.00, 25.00)
-ON CONFLICT (id) DO NOTHING;
+VALUES ('pro', 'Pro Harvester Plan', 10000, 50, 10000, true, 2500.00, 25.00)
+ON CONFLICT (id) DO UPDATE SET
+    leads_per_day = EXCLUDED.leads_per_day,
+    jobs_per_day = EXCLUDED.jobs_per_day,
+    leads_per_job = EXCLUDED.leads_per_job;
 
 -- 3. PROFILES TABLE (Linked to auth.users)
 CREATE TABLE IF NOT EXISTS public.profiles (
@@ -43,6 +46,10 @@ CREATE TABLE IF NOT EXISTS public.profiles (
     role TEXT NOT NULL DEFAULT 'user' CHECK (role IN ('user', 'admin')),
     plan_id TEXT NOT NULL DEFAULT 'free' REFERENCES public.plans(id),
     email_verified BOOLEAN NOT NULL DEFAULT false,
+    custom_leads_per_day INTEGER DEFAULT NULL,
+    custom_leads_per_job INTEGER DEFAULT NULL,
+    custom_jobs_per_day INTEGER DEFAULT NULL,
+    custom_plan_name TEXT DEFAULT NULL,
     created_at TIMESTAMPTZ NOT NULL DEFAULT timezone('utc'::text, now()),
     updated_at TIMESTAMPTZ NOT NULL DEFAULT timezone('utc'::text, now())
 );

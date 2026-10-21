@@ -324,10 +324,12 @@
                     <option value="100" selected>100 Leads</option>
                     <option value="250">250 Leads</option>
                     <option value="500">500 Leads</option>
-                    <option value="1000">1,000 Leads (Max Free)</option>
+                    <option value="1000">1,000 Leads</option>
+                    <option value="5000">5,000 Leads</option>
+                    <option value="10000">10,000 Leads</option>
                     <option value="custom">Custom...</option>
                   </select>
-                  <input type="number" id="customTargetInput" min="1" max="10000" placeholder="Qty (e.g. 75)" class="hidden w-24 px-2 py-0.5 text-xs rounded bg-surface-container-lowest text-on-surface font-semibold border border-primary/40 focus:outline-none focus:ring-1 focus:ring-primary ml-1" />
+                  <input type="number" id="customTargetInput" min="1" max="1000000" placeholder="Qty (e.g. 20000)" class="hidden w-28 px-2 py-0.5 text-xs rounded bg-surface-container-lowest text-on-surface font-semibold border border-primary/40 focus:outline-none focus:ring-1 focus:ring-primary ml-1" />
                 </div>
 
                 <!-- Website Scraping Toggle Chip (Default Off: Only Google Maps) -->
@@ -936,7 +938,7 @@
                 <th class="px-3.5 py-2.5">Email</th>
                 <th class="px-3.5 py-2.5">Name</th>
                 <th class="px-3.5 py-2.5">Role</th>
-                <th class="px-3.5 py-2.5">Plan</th>
+                <th class="px-3.5 py-2.5">Plan &amp; Quota</th>
                 <th class="px-3.5 py-2.5">Actions</th>
               </tr>
             </thead>
@@ -1019,6 +1021,63 @@
         </div>
       </div>
 
+    </div>
+  </div>
+
+  <!-- Modal: Admin Custom Quota Assignment -->
+  <div id="customQuotaModal" class="hidden fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm animate-fadeIn" onclick="if (event.target === this) closeCustomQuotaModal()">
+    <div class="w-full max-w-md rounded-2xl bg-surface-container-lowest p-6 shadow-2xl border border-surface-container-high/60 relative flex flex-col gap-4">
+      <div class="flex items-center justify-between pb-3 border-b border-surface-container-high/40">
+        <div class="flex items-center gap-2.5">
+          <div class="w-9 h-9 rounded-xl bg-purple-100 text-purple-700 flex items-center justify-center shadow-xs">
+            <span class="material-symbols-outlined text-[20px]">tune</span>
+          </div>
+          <div>
+            <h3 class="font-headline font-bold text-sm text-on-surface">Assign Custom Scrape Quota</h3>
+            <p class="text-[11px] text-secondary">Set exact daily lead volume (e.g. 20,000 or 500,000).</p>
+          </div>
+        </div>
+        <button type="button" onclick="closeCustomQuotaModal()" class="w-8 h-8 rounded-full flex items-center justify-center text-secondary hover:text-on-surface hover:bg-surface-container transition-colors">
+          <span class="material-symbols-outlined text-[18px]">close</span>
+        </button>
+      </div>
+
+      <form id="customQuotaForm" onsubmit="handleSaveCustomQuota(event)" class="flex flex-col gap-3.5">
+        <input type="hidden" id="quotaTargetUserId" />
+
+        <div class="flex flex-col gap-1">
+          <label class="font-label text-[11px] uppercase tracking-wider text-secondary font-semibold">Target User Email</label>
+          <input type="text" id="quotaTargetUserEmail" readonly class="w-full px-3 py-2 rounded-lg bg-surface-container text-xs text-on-surface font-mono border border-surface-container-high focus:outline-none select-all font-semibold" />
+        </div>
+
+        <div class="flex flex-col gap-1">
+          <label for="customDailyLeadsInput" class="font-label text-[11px] uppercase tracking-wider text-on-surface font-semibold flex items-center justify-between">
+            <span>Daily Leads Limit <span class="text-primary">*</span></span>
+            <span class="text-[10px] text-secondary lowercase">e.g. 20000 or 500000</span>
+          </label>
+          <input type="number" id="customDailyLeadsInput" min="1" max="1000000" required placeholder="Enter number of leads (e.g. 20000)" class="w-full px-3 py-2 rounded-lg bg-surface-container text-xs text-on-surface font-semibold border border-primary/40 focus:outline-none focus:ring-1 focus:ring-primary" />
+          <p class="text-[10px] text-secondary leading-tight mt-0.5">User will be permitted to scrape up to this quantity per day without any 1,000 lead cap.</p>
+        </div>
+
+        <div class="flex flex-col gap-1">
+          <label for="customPlanNameInput" class="font-label text-[11px] uppercase tracking-wider text-secondary font-semibold">Custom Plan Name (Optional)</label>
+          <input type="text" id="customPlanNameInput" placeholder="e.g. Enterprise VIP Plan (500K Leads)" maxlength="100" class="w-full px-3 py-2 rounded-lg bg-surface-container text-xs text-on-surface border border-surface-container-high focus:outline-none focus:ring-1 focus:ring-primary" />
+        </div>
+
+        <div class="flex items-center justify-between gap-2 pt-3 border-t border-surface-container-high/40">
+          <button type="button" onclick="resetUserCustomQuota()" class="px-2.5 py-1.5 rounded-lg text-xs font-label font-semibold text-rose-600 hover:bg-rose-50 transition-colors">
+            Reset to Plan Default
+          </button>
+          <div class="flex items-center gap-2">
+            <button type="button" onclick="closeCustomQuotaModal()" class="px-3 py-1.5 rounded-lg text-xs font-label font-semibold bg-surface-container hover:bg-surface-container-high text-secondary hover:text-on-surface transition-colors">
+              Cancel
+            </button>
+            <button type="submit" id="saveQuotaSubmitBtn" class="px-4 py-1.5 rounded-lg bg-primary hover:bg-primary-hover text-on-primary text-xs font-label font-semibold transition-all shadow-sm flex items-center gap-1.5">
+              <span class="material-symbols-outlined text-[16px]">check</span> Save Quota
+            </button>
+          </div>
+        </div>
+      </form>
     </div>
   </div>
 

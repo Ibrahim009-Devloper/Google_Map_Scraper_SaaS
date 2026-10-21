@@ -138,7 +138,7 @@ class ScrapeStartRequest(BaseModel):
         description="Natural language scraping request (e.g. 'Software companies in Dhanmondi without websites')",
     )
     provider: Optional[str] = Field(None, description="Preferred LLM provider: 'gemini' or 'groq'")
-    target_leads: Optional[int] = Field(None, ge=1, le=10000, description="Requested target leads count (e.g. 50)")
+    target_leads: Optional[int] = Field(None, ge=1, le=1000000, description="Requested target leads count (e.g. 50, 10000, 500000)")
     scrape_website: bool = Field(default=False, description="Whether to deep scrape business websites for emails/socials")
     must_have_email: bool = Field(default=False, description="When true, only leads with verified business emails are retained")
 
@@ -280,13 +280,20 @@ async def get_client_quota(
 
     user = security.get_current_user_optional(authorization, supabase_client=sb_client)
     if user:
+        profile = supabase_db.get_user_profile(user["id"]) or {}
+        plan = profile.get("plan") or {}
+        daily_limit = plan.get("daily_leads_limit") or plan.get("leads_per_day", 1000)
+        daily_usage = supabase_db.get_daily_usage(user["id"])
+        used = daily_usage.get("leads_scraped", 0)
         return {
             "is_authenticated": True,
             "session_owner": user["user_uid"],
             "email": user["email"],
-            "total_leads_scraped": 0,
-            "limit": "unlimited",
-            "is_limit_reached": False,
+            "total_leads_scraped": used,
+            "limit": daily_limit,
+            "plan_name": plan.get("name", "Pro Harvester Plan"),
+            "plan_id": plan.get("id", profile.get("plan_id", "pro")),
+            "is_limit_reached": (used >= daily_limit),
         }
 
     session_owner = security.get_client_identifier(request)
@@ -426,12 +433,16 @@ async def start_scraping_job(
 
     # Step 1: AI Planner
     try:
-        action_plan = generate_plan(payload.prompt, provider=payload.provider)
+        target_to_use = effective_limit_for_job or payload.target_leads
+        action_plan = generate_plan(
+            payload.prompt,
+            provider=payload.provider,
+            target_leads=target_to_use,
+        )
         if not action_plan.sub_locations or len(action_plan.sub_locations) == 0:
             from agent.planner import get_default_sub_locations
             action_plan.sub_locations = get_default_sub_locations(action_plan.country_code or "bd")
 
-        target_to_use = effective_limit_for_job or payload.target_leads
         if target_to_use and target_to_use > 0:
             action_plan.target_leads = target_to_use
 
@@ -607,15 +618,17 @@ async def stream_scraping_events(job_id: str):
 
             if is_done and len(new_leads) == 0:
                 try:
-                    final_leads = await temp_store.get_temp_leads(job_id)
-                    data["final_leads"] = [l.model_dump() for l in final_leads]
+                    count = current_job.get("leads_count", 0) if current_job else 0
+                    if count <= 300:
+                        final_leads = await temp_store.get_temp_leads(job_id)
+                        data["final_leads"] = [l.model_dump() for l in final_leads]
                     data["done"] = True
                     yield f"data: {json.dumps(data, ensure_ascii=False)}\n\n"
                 except Exception:
                     pass
                 break
 
-            await asyncio.sleep(0.4)
+            await asyncio.sleep(0.5)
 
     return StreamingResponse(
         event_generator(),
@@ -966,6 +979,10 @@ async def get_admin_users_list(
 class AdminUserUpdateRequest(BaseModel):
     plan_id: Optional[str] = None
     role: Optional[str] = None
+    custom_leads_per_day: Optional[int] = None
+    custom_leads_per_job: Optional[int] = None
+    custom_jobs_per_day: Optional[int] = None
+    custom_plan_name: Optional[str] = None
 
 
 @app.patch("/api/admin/users/{target_user_id}", tags=["Admin Dashboard"])
@@ -975,7 +992,8 @@ async def admin_update_user_plan_or_role(
     authorization: Optional[str] = Header(None),
 ):
     """
-    Admin endpoint to change a user's subscription plan ('free' or 'pro') or role.
+    Admin endpoint to change a user's subscription plan, role, or assign
+    a custom lead scraping quota (e.g. 20,000 or 500,000 leads).
     """
     sb_client = supabase_db.get_supabase_client()
     security.require_admin_user(authorization, supabase_client=sb_client)
@@ -983,6 +1001,10 @@ async def admin_update_user_plan_or_role(
         target_user_id=target_user_id,
         plan_id=payload.plan_id,
         role=payload.role,
+        custom_leads_per_day=payload.custom_leads_per_day,
+        custom_leads_per_job=payload.custom_leads_per_job,
+        custom_jobs_per_day=payload.custom_jobs_per_day,
+        custom_plan_name=payload.custom_plan_name,
     )
     return {"status": "success", "user": updated}
 

@@ -8,6 +8,9 @@
 let currentJobId = null;
 let eventSource = null;
 let allLeads = [];
+let leadPlaceIdMap = new Map();
+let currentDisplayLimit = 50;
+let isFeedRenderPending = false;
 let currentFilter = "all";
 let authToken = localStorage.getItem("gmaps_auth_token") || null;
 let currentRating = 5;
@@ -136,9 +139,9 @@ function setupInputListeners() {
     }
 
     // Auto-detect target count from user prompt and sync dropdown chip
-    const numMatch = val.match(/(\d{1,4})\s*(?:ta|ti|টি|টা|leads?|entities|businesses|companies|restaurants)?/i);
+    const numMatch = val.match(/(\d{1,7})\s*(?:ta|ti|টি|টা|leads?|entities|businesses|companies|restaurants)?/i);
     if (numMatch) {
-      if (["50", "100", "250", "500", "1000"].includes(numMatch[1])) {
+      if (["50", "100", "250", "500", "1000", "5000", "10000"].includes(numMatch[1])) {
         targetQuotaSelect.value = numMatch[1];
         if (customTargetInput) customTargetInput.classList.add("hidden");
       } else {
@@ -184,13 +187,10 @@ async function fetchCurrentQuota() {
     if (res.ok) {
       const q = await res.json();
       if (q.is_authenticated) {
-        if (currentUserProfile && currentUserProfile.plan) {
-          const used = currentUserProfile.daily_usage?.leads_scraped || 0;
-          const limit = currentUserProfile.plan.daily_leads_limit;
-          quotaText.innerHTML = `${used.toLocaleString()} / ${limit.toLocaleString()} <span class="text-tertiary font-semibold">(${currentUserProfile.plan.name})</span>`;
-        } else {
-          quotaText.innerText = "Verified Account";
-        }
+        const used = q.total_leads_scraped ?? currentUserProfile?.daily_usage?.leads_scraped ?? 0;
+        const limit = q.limit ?? currentUserProfile?.plan?.daily_leads_limit ?? 1000;
+        const planName = q.plan_name ?? currentUserProfile?.plan?.name ?? "Verified Account";
+        quotaText.innerHTML = `${used.toLocaleString()} / ${limit.toLocaleString()} <span class="text-tertiary font-semibold">(${planName})</span>`;
       } else {
         const jobsCount = q.jobs_count || 0;
         const jobLimit = q.job_limit || 1;
@@ -568,6 +568,8 @@ async function startScrapingJob() {
   // UI state transition
   setScrapingState(true);
   allLeads = [];
+  leadPlaceIdMap = new Map();
+  currentDisplayLimit = 50;
   lastCount = 0;
   startTime = Date.now();
   leadsFeedContainer.innerHTML = "";
@@ -665,7 +667,9 @@ function initSSEStream(jobId, targetQuota) {
       // Ingest New Leads Batch or Final Enriched Leads
       if (Array.isArray(data.final_leads) && data.final_leads.length > 0) {
         allLeads = data.final_leads;
-        renderLeadsFeed();
+        leadPlaceIdMap.clear();
+        allLeads.forEach((l, idx) => leadPlaceIdMap.set(l.place_id, idx));
+        scheduleLeadsFeedRender();
         updateMetricCards(targetQuota);
         const emailCount = allLeads.filter(l => l.emails && l.emails.length > 0).length;
         appendTerminalLog(`[ENRICH/SYNC] Final synchronized leads loaded. ${emailCount} leads verified with direct emails.`);
@@ -673,8 +677,10 @@ function initSSEStream(jobId, targetQuota) {
         let addedCount = 0;
         let updatedCount = 0;
         data.new_leads.forEach((lead) => {
-          const idx = allLeads.findIndex((l) => l.place_id === lead.place_id);
-          if (idx === -1) {
+          let idx = leadPlaceIdMap.get(lead.place_id);
+          if (idx === undefined) {
+            idx = allLeads.length;
+            leadPlaceIdMap.set(lead.place_id, idx);
             allLeads.push(lead);
             addedCount++;
           } else {
@@ -685,8 +691,8 @@ function initSSEStream(jobId, targetQuota) {
         });
 
         if (addedCount > 0 || updatedCount > 0) {
-          // Update Feed UI
-          renderLeadsFeed();
+          // Update Feed UI smoothly with RAF throttle
+          scheduleLeadsFeedRender();
           updateMetricCards(targetQuota);
 
           const latest = data.new_leads[0];
@@ -864,6 +870,24 @@ function getFilteredLeads() {
   return allLeads;
 }
 
+function scheduleLeadsFeedRender() {
+  if (isFeedRenderPending) return;
+  isFeedRenderPending = true;
+  requestAnimationFrame(() => {
+    isFeedRenderPending = false;
+    renderLeadsFeed();
+  });
+}
+
+function loadMoreFeedLeads(increment) {
+  if (increment === "all") {
+    currentDisplayLimit = allLeads.length;
+  } else {
+    currentDisplayLimit += (increment || 50);
+  }
+  renderLeadsFeed();
+}
+
 function renderLeadsFeed() {
   const visibleLeads = getFilteredLeads();
   streamBadge.innerText = `${visibleLeads.length} Loaded`;
@@ -875,8 +899,29 @@ function renderLeadsFeed() {
 
   leadsFeedContainer.innerHTML = "";
 
+  // Virtual Windowing: Only render up to currentDisplayLimit (default 50) from newest to oldest
+  const reversedLeads = visibleLeads.slice().reverse();
+  const leadsToRender = reversedLeads.slice(0, currentDisplayLimit);
+
+  // If there are more leads than the display limit, render a lightweight banner with controls
+  if (visibleLeads.length > currentDisplayLimit) {
+    const banner = document.createElement("div");
+    banner.className = "flex items-center justify-between p-3 rounded-xl bg-surface-container-high border border-outline-variant text-xs font-label text-secondary mb-3 shadow-xs";
+    banner.innerHTML = `
+      <div class="flex items-center gap-2">
+        <span class="material-symbols-outlined text-[16px] text-primary">speed</span>
+        <span>Showing newest <strong>${leadsToRender.length}</strong> of <strong>${visibleLeads.length.toLocaleString()}</strong> live leads (Zero-Lag Mode). All leads saved in SQLite & exportable.</span>
+      </div>
+      <div class="flex items-center gap-2">
+        <button onclick="loadMoreFeedLeads(50)" class="px-2.5 py-1 rounded bg-primary text-on-primary font-semibold text-[11px] hover:opacity-90 transition-all">+50 More</button>
+        <button onclick="loadMoreFeedLeads('all')" class="px-2 py-1 rounded bg-surface text-secondary hover:text-on-surface text-[11px] transition-all">View All</button>
+      </div>
+    `;
+    leadsFeedContainer.appendChild(banner);
+  }
+
   // Render cards from newest to oldest
-  visibleLeads.slice().reverse().forEach((lead) => {
+  leadsToRender.forEach((lead) => {
     const card = document.createElement("div");
     card.className = "lead-row flex flex-col md:flex-row md:items-center justify-between gap-3 p-4 rounded-xl bg-surface-container-low hover:bg-surface-container transition-all animate-fadeIn cursor-pointer";
     card.onclick = () => openLeadModal(lead);
@@ -953,6 +998,18 @@ function renderLeadsFeed() {
 
     leadsFeedContainer.appendChild(card);
   });
+
+  if (visibleLeads.length > currentDisplayLimit) {
+    const footerBtn = document.createElement("div");
+    footerBtn.className = "flex justify-center p-3 mt-2";
+    footerBtn.innerHTML = `
+      <button onclick="loadMoreFeedLeads(50)" class="px-4 py-2 rounded-xl bg-surface-container hover:bg-surface-container-high text-xs font-label font-semibold text-primary flex items-center gap-1.5 transition-all shadow-xs">
+        <span class="material-symbols-outlined text-[16px]">expand_more</span>
+        Load More Live Cards (${leadsToRender.length} of ${visibleLeads.length.toLocaleString()})
+      </button>
+    `;
+    leadsFeedContainer.appendChild(footerBtn);
+  }
 }
 
 function renderEmptyState(message) {
@@ -1682,7 +1739,18 @@ async function loadAdminUsers() {
 
       tbody.innerHTML = users.map(u => {
         const isCurrentAdmin = u.role === "admin";
-        const isPro = u.plan_id === "pro";
+        const hasCustom = Boolean(u.custom_leads_per_day && u.custom_leads_per_day > 0);
+        const isPro = u.plan_id === "pro" || hasCustom;
+        
+        let planBadge = "";
+        if (hasCustom) {
+          planBadge = `<span class="px-2 py-0.5 rounded text-[10px] font-bold uppercase bg-purple-100 text-purple-900 border border-purple-300" title="${escapeHtml(u.custom_plan_name || '')}">${u.custom_leads_per_day.toLocaleString()} LEADS/DAY</span>`;
+        } else if (isPro) {
+          planBadge = `<span class="px-2 py-0.5 rounded text-[10px] font-bold uppercase bg-primary-fixed text-primary">PRO (10K)</span>`;
+        } else {
+          planBadge = `<span class="px-2 py-0.5 rounded text-[10px] font-bold uppercase bg-surface-container text-secondary">FREE (1K)</span>`;
+        }
+
         return `
           <tr class="hover:bg-surface-container/60 transition-colors">
             <td class="px-3.5 py-2.5 font-medium text-on-surface">${escapeHtml(u.email)}</td>
@@ -1691,9 +1759,12 @@ async function loadAdminUsers() {
               <span class="px-2 py-0.5 rounded text-[10px] font-bold uppercase ${isCurrentAdmin ? 'bg-amber-100 text-amber-900 border border-amber-300' : 'bg-surface-container text-secondary'}">${u.role}</span>
             </td>
             <td class="px-3.5 py-2.5">
-              <span class="px-2 py-0.5 rounded text-[10px] font-bold uppercase ${isPro ? 'bg-primary-fixed text-primary' : 'bg-surface-container text-secondary'}">${u.plan_id}</span>
+              ${planBadge}
             </td>
             <td class="px-3.5 py-2.5 flex items-center gap-1.5 whitespace-nowrap">
+              <button type="button" class="px-2 py-1 rounded text-[10px] font-semibold bg-primary hover:bg-primary-hover text-on-primary transition-colors flex items-center gap-1 shadow-xs" onclick="openCustomQuotaModal('${u.id}', '${escapeHtml(u.email)}', ${u.custom_leads_per_day || 0}, '${escapeHtml(u.custom_plan_name || '')}')" title="Assign custom scrape volume (e.g. 20,000 or 500,000 leads)">
+                <span class="material-symbols-outlined text-[13px]">tune</span> Quota
+              </button>
               <button type="button" class="px-2 py-1 rounded text-[10px] font-semibold bg-surface-container hover:bg-surface-container-high text-on-surface transition-colors" onclick="changeUserPlan('${u.id}', '${isPro ? 'free' : 'pro'}')">
                 ${isPro ? 'Set Free' : 'Promote Pro'}
               </button>
@@ -1748,6 +1819,108 @@ async function changeUserRole(userId, newRole) {
     } else {
       const err = await res.json();
       showToast(err.detail || "Failed to update role", "error");
+    }
+  } catch (err) {
+    showToast(err.message, "error");
+  }
+}
+
+function openCustomQuotaModal(userId, userEmail, currentQuota, currentPlanName) {
+  const modal = document.getElementById("customQuotaModal");
+  if (!modal) return;
+  document.getElementById("quotaTargetUserId").value = userId;
+  document.getElementById("quotaTargetUserEmail").value = userEmail;
+  document.getElementById("customDailyLeadsInput").value = currentQuota > 0 ? currentQuota : 20000;
+  document.getElementById("customPlanNameInput").value = currentPlanName || "";
+  modal.classList.remove("hidden");
+}
+
+function closeCustomQuotaModal() {
+  const modal = document.getElementById("customQuotaModal");
+  if (modal) modal.classList.add("hidden");
+}
+
+async function handleSaveCustomQuota(event) {
+  if (event) event.preventDefault();
+  const userId = document.getElementById("quotaTargetUserId").value;
+  const rawLeads = document.getElementById("customDailyLeadsInput").value;
+  const planName = document.getElementById("customPlanNameInput").value.trim();
+  const submitBtn = document.getElementById("saveQuotaSubmitBtn");
+
+  const leads = parseInt(rawLeads, 10);
+  if (isNaN(leads) || leads <= 0) {
+    showToast("Please enter a valid positive number of leads (e.g. 20000).", "error");
+    return;
+  }
+
+  if (submitBtn) {
+    submitBtn.disabled = true;
+    submitBtn.innerHTML = `<span class="animate-spin material-symbols-outlined text-[16px]">sync</span> Saving...`;
+  }
+
+  try {
+    const res = await fetch(`/api/admin/users/${userId}`, {
+      method: "PATCH",
+      headers: {
+        "Content-Type": "application/json",
+        "Authorization": `Bearer ${authToken}`
+      },
+      body: JSON.stringify({
+        custom_leads_per_day: leads,
+        custom_leads_per_job: leads,
+        custom_jobs_per_day: 100,
+        custom_plan_name: planName || `Custom (${leads.toLocaleString()} Leads/Day)`,
+        plan_id: "pro"
+      })
+    });
+
+    if (res.ok) {
+      showToast(`Assigned ${leads.toLocaleString()} daily leads quota!`, "success");
+      closeCustomQuotaModal();
+      loadAdminUsers();
+      if (currentUserProfile && currentUserProfile.profile && currentUserProfile.profile.id === userId) {
+        await fetchUserProfile();
+      }
+    } else {
+      const err = await res.json();
+      showToast(err.detail || "Failed to update custom quota", "error");
+    }
+  } catch (err) {
+    showToast(err.message, "error");
+  } finally {
+    if (submitBtn) {
+      submitBtn.disabled = false;
+      submitBtn.innerHTML = `<span class="material-symbols-outlined text-[16px]">check</span> Save Quota`;
+    }
+  }
+}
+
+async function resetUserCustomQuota() {
+  const userId = document.getElementById("quotaTargetUserId").value;
+  if (!confirm("Are you sure you want to remove the custom quota and reset this user to the standard plan default?")) {
+    return;
+  }
+  try {
+    const res = await fetch(`/api/admin/users/${userId}`, {
+      method: "PATCH",
+      headers: {
+        "Content-Type": "application/json",
+        "Authorization": `Bearer ${authToken}`
+      },
+      body: JSON.stringify({
+        custom_leads_per_day: 0
+      })
+    });
+    if (res.ok) {
+      showToast("Custom quota reset to plan default.", "success");
+      closeCustomQuotaModal();
+      loadAdminUsers();
+      if (currentUserProfile && currentUserProfile.profile && currentUserProfile.profile.id === userId) {
+        await fetchUserProfile();
+      }
+    } else {
+      const err = await res.json();
+      showToast(err.detail || "Failed to reset quota", "error");
     }
   } catch (err) {
     showToast(err.message, "error");

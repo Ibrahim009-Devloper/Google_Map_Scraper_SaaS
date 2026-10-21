@@ -631,6 +631,15 @@ def enrich_single_lead(
         if extract_email_opt:
             lead.emails = select_best_single_email(all_emails, clean_url)
 
+        # Explicitly free lxml C-tree memory
+        try:
+            if 'soup_sub' in locals() and soup_sub:
+                soup_sub.decompose()
+            if 'soup_home' in locals() and soup_home:
+                soup_home.decompose()
+        except Exception:
+            pass
+
     except Exception:
         pass
 

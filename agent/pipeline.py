@@ -60,10 +60,17 @@ def filter_lead(lead: LeadItem, plan: ActionPlan) -> bool:
 
 
 def export_leads_to_json(leads: List[LeadItem], filepath: str) -> None:
-    """Exports leads list to formatted JSON file."""
-    leads_data = [lead.model_dump() for lead in leads]
+    """Exports leads list to formatted JSON file iteratively without RAM bloat."""
     with open(filepath, "w", encoding="utf-8") as f:
-        json.dump(leads_data, f, indent=2, ensure_ascii=False)
+        f.write("[\n")
+        total = len(leads)
+        for i, lead in enumerate(leads):
+            lead_json = json.dumps(lead.model_dump(), ensure_ascii=False)
+            if i < total - 1:
+                f.write(f"  {lead_json},\n")
+            else:
+                f.write(f"  {lead_json}\n")
+        f.write("]\n")
 
 
 def export_leads_to_csv(leads: List[LeadItem], filepath: str) -> None:
@@ -170,6 +177,17 @@ def run_pipeline(
         if effective_limit is None or effective_limit > ANONYMOUS_LEAD_LIMIT:
             effective_limit = ANONYMOUS_LEAD_LIMIT
 
+    # For large target goals, ensure full 6-page scrolling (120 leads/query) and multi-location expansion
+    if effective_limit and effective_limit > 100:
+        plan.filters.max_pages_per_search = 6
+        from agent.planner import expand_sub_locations_for_target
+        plan.sub_locations = expand_sub_locations_for_target(
+            base_sub_locations=plan.sub_locations,
+            target_leads=effective_limit,
+            keywords=plan.keywords,
+            country_code=plan.country_code or "bd",
+        )
+
     if session_owner and not is_authenticated:
         existing_scraped = get_anonymous_quota_sync(session_owner)
         if existing_scraped >= ANONYMOUS_LEAD_LIMIT:
@@ -217,12 +235,26 @@ def run_pipeline(
 
     print(f"\n[Pipeline] Starting scrape for {len(plan.sub_locations)} sub-locations and {len(plan.keywords)} keywords ({total_tasks} total searches)...", flush=True)
 
-    # Helper: Clean, filter, commit 1-by-1 to SQLite, and stream live to user
+    pending_db_leads: List[LeadItem] = []
+
+    def flush_pending_db_leads() -> None:
+        nonlocal pending_db_leads
+        if not pending_db_leads or not job_id:
+            return
+        batch_to_save = pending_db_leads
+        pending_db_leads = []
+        save_temp_leads_batch_sync(job_id, batch_to_save)
+        update_job_sync(job_id, leads_count=len(filtered_leads))
+        if session_owner and not is_authenticated:
+            increment_anonymous_quota_sync(session_owner, len(batch_to_save))
+
+    # Helper: Clean, filter, commit in batches to SQLite, and stream live to user
     def save_and_stream_lead(lead: LeadItem) -> bool:
         nonlocal filtered_leads, job_status
 
         if stop_event and stop_event.is_set():
             job_status = "stopped"
+            flush_pending_db_leads()
             return False
 
         # Strictly enforce target leads limit
@@ -231,6 +263,7 @@ def run_pipeline(
                 job_status = "completed"
             else:
                 job_status = "limit_reached"
+            flush_pending_db_leads()
             if stop_event and hasattr(stop_event, "set"):
                 stop_event.set()
             return False
@@ -247,12 +280,13 @@ def run_pipeline(
         # Add to qualified filtered leads list
         filtered_leads.append(cleaned_lead)
 
-        # Immediately save 1 lead to SQLite Temp Buffer
+        # Buffer lead for batch database write (reduces disk I/O thrashing by >90%)
         if job_id:
-            save_temp_leads_batch_sync(job_id, [cleaned_lead])
-            update_job_sync(job_id, leads_count=len(filtered_leads))
-            if session_owner and not is_authenticated:
-                increment_anonymous_quota_sync(session_owner, 1)
+            pending_db_leads.append(cleaned_lead)
+            batch_threshold = 1 if (effective_limit and effective_limit <= 25) else 15
+            if len(pending_db_leads) >= batch_threshold:
+                flush_pending_db_leads()
+
             if on_batch:
                 try:
                     on_batch(job_id, [cleaned_lead])
@@ -264,6 +298,7 @@ def run_pipeline(
 
         # Check quota limit or user requested target
         if effective_limit and len(filtered_leads) >= effective_limit:
+            flush_pending_db_leads()
             if plan.target_leads and len(filtered_leads) >= plan.target_leads and effective_limit == plan.target_leads:
                 print(f"[Target] Achieved requested target ({len(filtered_leads)}/{plan.target_leads} leads). Stopping dynamic loop.", flush=True)
                 job_status = "completed"
@@ -377,6 +412,67 @@ def run_pipeline(
                 except Exception as prog_err:
                     print(f"[Warning] on_progress callback error: {prog_err}")
 
+    # Dynamic Geo-Expansion Loop: If target leads not yet reached and more leads needed,
+    # expand search grid dynamically to neighboring sectors to satisfy user's goal
+    expansion_round = 1
+    while (
+        effective_limit
+        and len(filtered_leads) < effective_limit
+        and not (stop_event and stop_event.is_set())
+        and job_status == "running"
+        and expansion_round <= 5
+    ):
+        from agent.planner import expand_sub_locations_for_target
+        current_count = len(plan.sub_locations)
+        expanded_locs = expand_sub_locations_for_target(
+            base_sub_locations=plan.sub_locations,
+            target_leads=int(effective_limit * (1 + 0.5 * expansion_round)),
+            keywords=plan.keywords,
+            country_code=plan.country_code or "bd",
+        )
+        new_locs = expanded_locs[current_count:]
+        if not new_locs:
+            break
+
+        print(f"\n[Dynamic Expansion] Expanding search grid with {len(new_locs)} additional micro-zones to reach target ({len(filtered_leads)}/{effective_limit} leads)...", flush=True)
+        plan.sub_locations.extend(new_locs)
+        total_tasks = len(plan.sub_locations) * len(plan.keywords)
+
+        for sub_loc in new_locs:
+            if (stop_event and stop_event.is_set()) or job_status in ("limit_reached", "completed"):
+                break
+            for keyword in plan.keywords:
+                if (stop_event and stop_event.is_set()) or job_status in ("limit_reached", "completed"):
+                    break
+
+                completed_tasks += 1
+                search_desc = f"'{keyword}' in {sub_loc.area_name}"
+                print(f"[{completed_tasks}/{total_tasks}] (Expansion) Scraping {search_desc}...", flush=True)
+
+                if job_id:
+                    update_job_sync(job_id, current_area=search_desc, leads_count=len(filtered_leads))
+
+                fetch_all_pages_for_location(
+                    keyword=keyword,
+                    area_name=sub_loc.area_name,
+                    lat=sub_loc.lat,
+                    lon=sub_loc.lon,
+                    radius=sub_loc.radius,
+                    max_pages=plan.filters.max_pages_per_search,
+                    gl=plan.country_code,
+                    hl=plan.language,
+                    stop_event=stop_event,
+                    on_page_leads=handle_page_leads,
+                )
+
+                if on_progress:
+                    try:
+                        on_progress(completed_tasks, total_tasks, search_desc, len(filtered_leads))
+                    except Exception as prog_err:
+                        print(f"[Warning] on_progress callback error: {prog_err}")
+
+        expansion_round += 1
+
     # Determine status if not stopped/limit_reached
     if job_status == "running":
         job_status = "completed"
@@ -387,9 +483,9 @@ def run_pipeline(
     if plan.target_leads and len(filtered_leads) > plan.target_leads:
         filtered_leads = filtered_leads[:plan.target_leads]
 
-    # Update SQLite with final cleaned and enriched fields
+    # Flush any remaining leads from the buffer to SQLite
     if job_id:
-        save_temp_leads_batch_sync(job_id, filtered_leads)
+        flush_pending_db_leads()
 
     # Update final state in temp_store
     if job_id:

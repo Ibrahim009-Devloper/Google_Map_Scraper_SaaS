@@ -280,6 +280,34 @@ def get_user_profile(user_id: str) -> Optional[Dict[str, Any]]:
         if resp.data and len(resp.data) > 0:
             profile = resp.data[0]
             plan = profile.get("plans") or {}
+
+            # Check if user has a custom quota override assigned by admin
+            custom_daily = profile.get("custom_leads_per_day")
+            if custom_daily and int(custom_daily) > 0:
+                c_leads = int(custom_daily)
+                c_job = int(profile.get("custom_leads_per_job") or c_leads)
+                c_jobs_day = int(profile.get("custom_jobs_per_day") or 100)
+                c_name = profile.get("custom_plan_name") or f"Custom Plan ({c_leads:,} Leads/Day)"
+                plan = {
+                    "id": "custom",
+                    "name": c_name,
+                    "leads_per_day": c_leads,
+                    "daily_leads_limit": c_leads,
+                    "leads_per_job": c_job,
+                    "max_leads_per_job": c_job,
+                    "jobs_per_day": c_jobs_day,
+                    "daily_jobs_limit": c_jobs_day,
+                    "website_enrichment_enabled": True,
+                    "price_bdt": 0.0,
+                    "price_usd": 0.0,
+                }
+            else:
+                # For standard Pro plan, ensure leads_per_job matches leads_per_day (10,000)
+                if profile.get("plan_id") == "pro" or plan.get("id") == "pro":
+                    daily_limit = plan.get("leads_per_day", 10000)
+                    plan["leads_per_job"] = max(plan.get("leads_per_job", daily_limit), daily_limit)
+
+            plan["daily_leads_limit"] = plan.get("leads_per_day", 1000)
             profile["plan"] = plan
             return profile
     except Exception as e:
@@ -427,8 +455,12 @@ def check_user_limits(
             "usage": usage,
         }
 
-    # 4. Calculate effective target leads
-    max_leads_per_job = plan.get("leads_per_job", 300)
+    # 4. Calculate effective target leads (Ensure Pro and Custom plans are not choked)
+    max_leads_per_job = plan.get("leads_per_job") or plan.get("leads_per_day", 300)
+    # If the user has a custom quota or pro plan, allow the entire daily limit in a single job
+    if plan.get("id") in ("pro", "custom") or profile.get("custom_leads_per_day"):
+        max_leads_per_job = max(max_leads_per_job, max_leads_per_day)
+
     remaining_today = max_leads_per_day - leads_today
     effective_target = min(requested_target_leads, max_leads_per_job, remaining_today)
 
@@ -602,15 +634,35 @@ def update_user_plan_or_role(
     target_user_id: str,
     plan_id: Optional[str] = None,
     role: Optional[str] = None,
+    custom_leads_per_day: Optional[int] = None,
+    custom_leads_per_job: Optional[int] = None,
+    custom_jobs_per_day: Optional[int] = None,
+    custom_plan_name: Optional[str] = None,
 ) -> Dict[str, Any]:
-    """Admin function to update a user's subscription plan or admin status."""
+    """
+    Admin function to update a user's subscription plan, admin status,
+    or assign a custom lead scraping quota (e.g. 20,000 leads, 500,000 leads).
+    """
     client = get_supabase_client()
     import datetime
     payload = {"updated_at": datetime.datetime.now(datetime.timezone.utc).isoformat()}
-    if plan_id:
+    if plan_id is not None:
         payload["plan_id"] = plan_id
-    if role:
+    if role is not None:
         payload["role"] = role
+
+    if custom_leads_per_day is not None:
+        if custom_leads_per_day <= 0:
+            # Clear custom quota override
+            payload["custom_leads_per_day"] = None
+            payload["custom_leads_per_job"] = None
+            payload["custom_jobs_per_day"] = None
+            payload["custom_plan_name"] = None
+        else:
+            payload["custom_leads_per_day"] = custom_leads_per_day
+            payload["custom_leads_per_job"] = custom_leads_per_job or custom_leads_per_day
+            payload["custom_jobs_per_day"] = custom_jobs_per_day or 100
+            payload["custom_plan_name"] = custom_plan_name or f"Custom ({custom_leads_per_day:,} Leads/Day)"
 
     resp = client.table("profiles").update(payload).eq("id", target_user_id).execute()
     return resp.data[0] if resp.data else payload

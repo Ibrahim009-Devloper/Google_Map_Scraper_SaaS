@@ -6,6 +6,7 @@ Converts natural language user requests into a strict JSON ActionPlan.
 import os
 import json
 import re
+import math
 import datetime
 from typing import Optional, List
 
@@ -23,15 +24,18 @@ PLANNER_SYSTEM_PROMPT = """You are an expert B2B Lead Generation Strategist and 
 Your job is to convert a user's natural language lead request into a strict JSON execution plan.
 
 RULES:
-1. KEYWORDS: Generate 2 to 4 highly relevant Google Maps business category keywords based on the user's request.
+1. KEYWORDS (CRITICAL - PRESERVE USER'S CORE INTENT):
+   - Always retain the user's explicit requested business category as the FIRST and PRIMARY keyword (e.g., if user asks for "restaurants in Dhaka", "Restaurant" MUST be the first keyword).
+   - Generate 2 to 4 closely related Google Maps category keywords (e.g. ["Restaurant", "Bangladeshi restaurant", "Diner", "Fast food restaurant"]).
+   - NEVER generate distant, unrelated, or random categories to artificially inflate results. The user's core requested category must NEVER be forgotten or diluted!
 2. GEO-SPLITTING & SUB-LOCATIONS (CRITICAL - MUST NEVER BE EMPTY):
-   - "sub_locations" MUST NEVER BE EMPTY! You MUST ALWAYS return at least 3 to 15 sub-locations with valid center Latitude (`lat`), Longitude (`lon`), and `radius` in meters (usually 2500 to 4000).
-   - If the user specifies a city or neighborhood (e.g. "Dhaka", "Banani", "London", "New York", "Mumbai"), break it down into 5 to 15 smaller neighborhoods/sub-areas.
-   - If the user specifies a country or nationality (e.g. "India", "Indian", "USA", "American", "Canada", "UK", "Bangladesh") without a specific city (e.g. "Indian restaurants", "Dentists in USA"), generate 5 to 10 sub-locations covering major metropolitan cities of that country (e.g. for India: Delhi, Mumbai, Bangalore, Hyderabad, Chennai, Kolkata, Pune; for USA: New York, Los Angeles, Chicago, Houston, Miami; for UK: London, Manchester, Birmingham, etc.)!
-   - If the user specifies NO location at all (e.g. "Dentists", "IT companies", "20 restaurants"), infer the country from the query context or default to Bangladesh (Dhaka: Dhanmondi, Gulshan, Banani, Uttara, Mirpur, etc.).
+   - "sub_locations" MUST NEVER BE EMPTY! Return at least 5 to 20 sub-locations with valid center Latitude (`lat`), Longitude (`lon`), and `radius` in meters (usually 2500 to 4000).
+   - If the user specifies a city or neighborhood (e.g. "Dhaka", "Banani", "London", "New York", "Mumbai"), break it down into smaller neighborhoods/sub-areas.
+   - If the user specifies a country or nationality (e.g. "India", "Indian", "USA", "American", "Canada", "UK", "Bangladesh") without a specific city, generate sub-locations covering major metropolitan commercial hubs across that country.
+   - If the user specifies NO location at all, infer the country from the query context or default to Bangladesh (Dhaka: Dhanmondi, Gulshan, Banani, Uttara, Mirpur, etc.).
    - UNDER NO CIRCUMSTANCES should "sub_locations" be an empty array `[]`!
 3. TARGET LEADS (CRITICAL):
-   - If the user specifies an exact quantity of leads in natural language (e.g., "50 ta lead", "50টি রেস্টুরেন্ট", "50 restaurants", "100 companies", "20 leads"), extract this integer into "target_leads" (e.g. 50).
+   - If the user specifies an exact quantity of leads in natural language (e.g., "50 ta lead", "50টি রেস্টুরেন্ট", "10,000 restaurants", "10k leads", "500000 companies"), extract this integer into "target_leads" (e.g. 10000 or 500000).
    - If no specific number is mentioned, set "target_leads": null.
 4. WEBSITE FILTER:
    - Set "website_requirement": "no_website" if the user wants leads without websites (or businesses that only have Facebook/Instagram pages).
@@ -44,7 +48,7 @@ RULES:
    - Infer the country code (e.g., "bd" for Bangladesh, "us" for USA, "gb" for UK) from the requested location.
    - Default language is "en".
 7. PAGINATION & SPEED:
-   - Set "max_pages_per_search": 2 (default) or 3 (for deep coverage) so searches complete rapidly (40 to 60 leads per micro-zone).
+   - Set "max_pages_per_search": 6 (fetching all 6 pagination offsets for up to 120 leads per zone) to maximize yield per location.
 8. OUTPUT: Respond ONLY with valid JSON matching the exact schema. No markdown fences or extra conversational text.
 
 Output JSON Schema:
@@ -127,11 +131,35 @@ def plan_with_groq(user_prompt: str, api_key: str) -> ActionPlan:
     return ActionPlan.model_validate(data)
 
 
+def _parse_target_leads_num(raw_str: str) -> Optional[int]:
+    """Helper to parse numeric strings, handling commas, underscores, and 'k'/'m' suffixes."""
+    if not raw_str:
+        return None
+    clean = raw_str.lower().replace(",", "").replace("_", "").strip()
+    if clean.endswith("k"):
+        try:
+            val = float(clean[:-1]) * 1000
+            return int(val)
+        except ValueError:
+            return None
+    elif clean.endswith("m"):
+        try:
+            val = float(clean[:-1]) * 1000000
+            return int(val)
+        except ValueError:
+            return None
+    try:
+        val = int(clean)
+        return val
+    except ValueError:
+        return None
+
+
 def extract_target_count(prompt: str) -> Optional[int]:
     """
     Intelligently extracts the requested target leads count from natural language prompts.
-    Handles Bengali markers ('50 ta', '50টি', '৫০ টা'), English markers ('50 leads', 'top 50', '50 restaurants'),
-    while avoiding false positives like 'Road 11', 'Sector 4', 'Plot 12'.
+    Handles Bengali numerals ('৫০ টা', '১০০০০টি', '৫০০০০০'), English markers ('50 leads', '10,000 restaurants', '500k leads'),
+    and 'k' suffixes ('10k', '50k', '500k') up to 1,000,000 leads.
     """
     if not prompt:
         return None
@@ -142,49 +170,41 @@ def extract_target_count(prompt: str) -> Optional[int]:
     for i, b_char in enumerate(bengali_digits):
         text = text.replace(b_char, str(i))
 
-    # 1. Match explicit quantity indicators
+    # 1. Match explicit quantity indicators with units (e.g., "10,000 leads", "500k ta", "500000 companies")
     match = re.search(
-        r'(?:top\s+|find\s+|get\s+|scrape\s+|need\s+|lagbe\s+)?(\d{1,4})\s*(?:ta|ti|টি|টা|leads?|লিড|entities|businesses|companies|restaurants?|রেস্টুরেন্ট|hotels?|shops?|দোকান|items?)',
+        r'(?:top\s+|find\s+|get\s+|scrape\s+|need\s+|lagbe\s+)?(\d{1,3}(?:,\d{3})+|\d+(?:\.\d+)?k|\d{1,7})\s*(?:ta|ti|টি|টা|leads?|লিড|entities|businesses|companies|restaurants?|রেস্টুরেন্ট|hotels?|shops?|দোকান|items?)',
         text,
         re.IGNORECASE,
     )
     if match:
-        try:
-            val = int(match.group(1))
-            if 1 <= val <= 1000:
-                return val
-        except ValueError:
-            pass
+        val = _parse_target_leads_num(match.group(1))
+        if val and 1 <= val <= 1000000:
+            return val
 
-    # 2. Match patterns like "50টি", "50টা" anywhere
-    match = re.search(r'(\d{1,4})\s*(?:ta|ti|টি|টা)', text, re.IGNORECASE)
+    # 2. Match patterns like "50টি", "10000টা", "500kটি" anywhere
+    match = re.search(r'(\d{1,3}(?:,\d{3})+|\d+(?:\.\d+)?k|\d{1,7})\s*(?:ta|ti|টি|টা)', text, re.IGNORECASE)
     if match:
-        try:
-            val = int(match.group(1))
-            if 1 <= val <= 1000:
-                return val
-        except ValueError:
-            pass
+        val = _parse_target_leads_num(match.group(1))
+        if val and 1 <= val <= 1000000:
+            return val
 
-    # 3. Match "top 50" or "scrape 50" without suffix
-    match = re.search(r'\b(?:top|scrape|extract|collect|need|give\s+me)\s+(\d{1,4})\b', text, re.IGNORECASE)
+    # 3. Match "top 50", "scrape 10000", "need 500k" without unit suffix
+    match = re.search(r'\b(?:top|scrape|extract|collect|need|give\s+me)\s+(\d{1,3}(?:,\d{3})+|\d+(?:\.\d+)?k|\d{1,7})\b', text, re.IGNORECASE)
     if match:
-        try:
-            val = int(match.group(1))
-            if 1 <= val <= 1000:
-                return val
-        except ValueError:
-            pass
+        val = _parse_target_leads_num(match.group(1))
+        if val and 1 <= val <= 1000000:
+            return val
 
     # 4. Match general number followed by noun, avoiding "sector 4", "road 12", etc.
-    for m in re.finditer(r'\b(\d{1,4})\b', text):
-        num = int(m.group(1))
+    for m in re.finditer(r'\b(\d{1,3}(?:,\d{3})+|\d{2,7})\b', text):
+        val = _parse_target_leads_num(m.group(1))
+        if not val or not (5 <= val <= 1000000):
+            continue
         start = m.start()
         prefix = text[max(0, start - 15):start].lower()
         if any(w in prefix for w in ["sector", "road", "plot", "house", "block", "ward", "st", "ave", "lane"]):
             continue
-        if 5 <= num <= 1000:
-            return num
+        return val
 
     return None
 
@@ -268,7 +288,203 @@ def get_default_sub_locations(country_code: str = "bd") -> List[SubLocation]:
         ]
 
 
-def create_offline_fallback_plan(user_prompt: str) -> ActionPlan:
+def get_comprehensive_country_hubs(country_code: str = "bd") -> List[SubLocation]:
+    """
+    Returns extensive national and metropolitan commercial hubs for multi-location scaling.
+    Covers major divisional hubs, commercial districts, and urban economic centers.
+    """
+    code = (country_code or "bd").lower().strip()
+    if code in ("bd", "bangladesh"):
+        return [
+            # Dhaka Metro Commercial Hubs
+            SubLocation(area_name="Dhanmondi, Dhaka", lat=23.7461, lon=90.3742, radius=3000.0),
+            SubLocation(area_name="Gulshan-1 & 2, Dhaka", lat=23.7925, lon=90.4078, radius=3500.0),
+            SubLocation(area_name="Banani & Kemal Ataturk, Dhaka", lat=23.7937, lon=90.4047, radius=3000.0),
+            SubLocation(area_name="Uttara Sectors 1-14, Dhaka", lat=23.8759, lon=90.3795, radius=3500.0),
+            SubLocation(area_name="Mirpur 1, 2 & 10, Dhaka", lat=23.8070, lon=90.3686, radius=3500.0),
+            SubLocation(area_name="Mohammadpur & Ring Road, Dhaka", lat=23.7658, lon=90.3584, radius=3000.0),
+            SubLocation(area_name="Khilgaon & Malibagh, Dhaka", lat=23.7516, lon=90.4239, radius=3000.0),
+            SubLocation(area_name="Badda & Rampura, Dhaka", lat=23.7805, lon=90.4267, radius=3000.0),
+            SubLocation(area_name="Motijheel & Dilkusha, Dhaka", lat=23.7330, lon=90.4172, radius=3000.0),
+            SubLocation(area_name="Tejgaon Commercial Area, Dhaka", lat=23.7639, lon=90.3986, radius=3000.0),
+            SubLocation(area_name="Bashundhara R/A & Kuril, Dhaka", lat=23.8151, lon=90.4255, radius=3500.0),
+            SubLocation(area_name="Old Dhaka & Lalbagh, Dhaka", lat=23.7196, lon=90.3884, radius=3000.0),
+            SubLocation(area_name="Paltan & Shantinagar, Dhaka", lat=23.7381, lon=90.4132, radius=3000.0),
+            SubLocation(area_name="Wari & Sutrapur, Dhaka", lat=23.7180, lon=90.4190, radius=3000.0),
+            SubLocation(area_name="Jatrabari & Sayedabad, Dhaka", lat=23.7118, lon=90.4344, radius=3500.0),
+            SubLocation(area_name="Farmgate & Panthapath, Dhaka", lat=23.7533, lon=90.3889, radius=2500.0),
+            SubLocation(area_name="Elephant Road & New Market, Dhaka", lat=23.7402, lon=90.3854, radius=2500.0),
+            SubLocation(area_name="Savar Commercial Hub, Dhaka", lat=23.8442, lon=90.2592, radius=4000.0),
+            SubLocation(area_name="Tongi Commercial Zone, Gazipur", lat=23.8967, lon=90.4005, radius=4000.0),
+            SubLocation(area_name="Chashara & Narayanganj Sadar", lat=23.6238, lon=90.4990, radius=4000.0),
+            SubLocation(area_name="Gazipur Chowrasta, Gazipur", lat=23.9999, lon=90.3795, radius=4000.0),
+            # Chittagong Division
+            SubLocation(area_name="Agrabad Commercial Area, Chittagong", lat=22.3278, lon=91.8123, radius=3500.0),
+            SubLocation(area_name="GEC Circle & Nasirabad, Chittagong", lat=22.3592, lon=91.8215, radius=3500.0),
+            SubLocation(area_name="Halishahar & Bandar, Chittagong", lat=22.3338, lon=91.7778, radius=4000.0),
+            SubLocation(area_name="Panchlaish & Chawkbazar, Chittagong", lat=22.3601, lon=91.8385, radius=3500.0),
+            SubLocation(area_name="Jhautola & Sugandha, Cox's Bazar", lat=21.4385, lon=91.9796, radius=4000.0),
+            SubLocation(area_name="Kandirpar & Badurtala, Comilla", lat=23.4607, lon=91.1809, radius=3500.0),
+            SubLocation(area_name="SSK Road, Feni", lat=23.0159, lon=91.3976, radius=3500.0),
+            SubLocation(area_name="Court Road, Brahmanbaria", lat=23.9608, lon=91.1115, radius=3500.0),
+            # Sylhet Division
+            SubLocation(area_name="Zindabazar & Bandar Bazar, Sylhet", lat=24.8949, lon=91.8687, radius=3500.0),
+            SubLocation(area_name="Shibganj & Tilagarh, Sylhet", lat=24.8973, lon=91.8920, radius=3500.0),
+            SubLocation(area_name="Ambarkhana & Chourhatta, Sylhet", lat=24.9042, lon=91.8708, radius=3500.0),
+            # Rajshahi & Rangpur Divisions
+            SubLocation(area_name="Shaheb Bazar & Boalia, Rajshahi", lat=24.3636, lon=88.6042, radius=3500.0),
+            SubLocation(area_name="Satmatha & Joleshworitola, Bogra", lat=24.8465, lon=89.3777, radius=3500.0),
+            SubLocation(area_name="Jahaj Company Mor & Dhap, Rangpur", lat=25.7439, lon=89.2752, radius=3500.0),
+            SubLocation(area_name="Dinajpur Sadar Commercial Area", lat=25.6217, lon=88.6355, radius=3500.0),
+            # Khulna & Barisal Divisions
+            SubLocation(area_name="Shibbari Mor & Daulatpur, Khulna", lat=22.8200, lon=89.5500, radius=4000.0),
+            SubLocation(area_name="Garibshah Road, Jessore", lat=23.1664, lon=89.2081, radius=3500.0),
+            SubLocation(area_name="Sadar Road & C&B Road, Barisal", lat=22.7010, lon=90.3535, radius=3500.0),
+            SubLocation(area_name="Ganginarpar & Charpara, Mymensingh", lat=24.7471, lon=90.4203, radius=3500.0),
+            SubLocation(area_name="NS Road, Kushtia", lat=23.9013, lon=89.1205, radius=3500.0),
+        ]
+    return get_default_sub_locations(country_code)
+
+
+def detect_and_preserve_core_keyword(user_prompt: str, generated_keywords: List[str]) -> List[str]:
+    """
+    CRITICAL RULE ENFORCER:
+    Ensures that the user's explicit requested business category is ALWAYS preserved
+    as the PRIMARY keyword at index 0, and never forgotten or diluted by LLM variants.
+    Keeps keyword list focused (2 to 4 keywords total).
+    """
+    if not generated_keywords:
+        generated_keywords = ["Business"]
+
+    p_lower = user_prompt.lower()
+    core_kw: Optional[str] = None
+
+    # Detect user's core business category from natural language
+    if any(w in p_lower for w in ["restaurant", "restaurants", "রেস্টুরেন্ট", "খাবার", "food", "dining", "diner"]):
+        core_kw = "Restaurant"
+    elif any(w in p_lower for w in ["software", "tech", "it company", "it companies", "আইটি", "software company"]):
+        core_kw = "Software company"
+    elif any(w in p_lower for w in ["dentist", "dental", "dentists", "ডেন্টাল"]):
+        core_kw = "Dentist"
+    elif any(w in p_lower for w in ["hotel", "hotels", "resort", "motel", "হোটেল"]):
+        core_kw = "Hotel"
+    elif any(w in p_lower for w in ["cafe", "coffee", "cafes", "ক্যাফে"]):
+        core_kw = "Cafe"
+    elif any(w in p_lower for w in ["gym", "fitness", "workout", "জিম"]):
+        core_kw = "Gym"
+    elif any(w in p_lower for w in ["clothing", "boutique", "fashion", "garments", "দোকান", "shop", "store"]):
+        core_kw = "Clothing store" if "clothing" in p_lower or "fashion" in p_lower else "Store"
+    elif any(w in p_lower for w in ["hospital", "clinic", "medical", "হাসপাতাল"]):
+        core_kw = "Hospital"
+    elif any(w in p_lower for w in ["school", "college", "university", "coaching", "স্কুল"]):
+        core_kw = "School"
+    elif any(w in p_lower for w in ["real estate", "property", "developer", "বিল্ডার"]):
+        core_kw = "Real estate agency"
+    elif any(w in p_lower for w in ["lawyer", "attorney", "law firm", "আইনজীবী"]):
+        core_kw = "Law firm"
+
+    # Assemble cleaned keywords: core keyword first, followed by unique valid generated keywords
+    final_keywords: List[str] = []
+    if core_kw:
+        final_keywords.append(core_kw)
+
+    for kw in generated_keywords:
+        cleaned = kw.strip()
+        if cleaned and not any(cleaned.lower() == existing.lower() for existing in final_keywords):
+            final_keywords.append(cleaned)
+        if len(final_keywords) >= 4:
+            break
+
+    return final_keywords if final_keywords else generated_keywords[:4]
+
+
+def expand_sub_locations_for_target(
+    base_sub_locations: List[SubLocation],
+    target_leads: int,
+    keywords: List[str],
+    country_code: str = "bd",
+) -> List[SubLocation]:
+    """
+    Dynamically scales sub-locations to ensure sufficient geographic coverage
+    for large lead targets (e.g. 5,000, 10,000, 50,000, 500,000 leads).
+    Google Maps reverse API returns up to 120 leads per query (6 pages * 20 results).
+    Assuming an average unique yield of ~70 leads per search:
+        needed_searches = ceil(target_leads / 70)
+        needed_locations = ceil(needed_searches / num_keywords)
+    If needed_locations > len(base_sub_locations), scales up with regional hubs
+    and a concentric hexagonal geo-spatial radial grid around center points.
+    """
+    if not base_sub_locations:
+        base_sub_locations = get_default_sub_locations(country_code)
+
+    if not target_leads or target_leads <= 100:
+        return base_sub_locations
+
+    num_keywords = max(1, len(keywords))
+    avg_yield_per_search = 70.0
+    needed_searches = max(1, math.ceil(target_leads / avg_yield_per_search))
+    needed_locations = max(len(base_sub_locations), math.ceil(needed_searches / num_keywords))
+
+    if len(base_sub_locations) >= needed_locations:
+        return base_sub_locations
+
+    expanded: List[SubLocation] = list(base_sub_locations)
+    existing_coords = {(round(loc.lat, 3), round(loc.lon, 3)) for loc in expanded}
+
+    # Step 1: Incorporate additional verified regional hubs for the country
+    regional_pool = get_comprehensive_country_hubs(country_code)
+    for hub in regional_pool:
+        if len(expanded) >= needed_locations:
+            break
+        coord_key = (round(hub.lat, 3), round(hub.lon, 3))
+        if coord_key not in existing_coords:
+            existing_coords.add(coord_key)
+            expanded.append(hub)
+
+    if len(expanded) >= needed_locations:
+        return expanded
+
+    # Step 2: Geometric radial grid expansion (Hexagonal spatial rings matching 3500m radius)
+    ring = 1
+    base_seeds = list(expanded)
+    while len(expanded) < needed_locations and ring <= 35:
+        step_lat = 0.030 * ring
+        step_lon = 0.033 * ring
+        num_points = 6 * ring
+        angle_step = 360.0 / num_points
+
+        for seed in base_seeds:
+            if len(expanded) >= needed_locations:
+                break
+            for i in range(num_points):
+                if len(expanded) >= needed_locations:
+                    break
+                rad = math.radians(i * angle_step)
+                d_lat = step_lat * math.cos(rad)
+                d_lon = step_lon * math.sin(rad)
+                new_lat = round(seed.lat + d_lat, 5)
+                new_lon = round(seed.lon + d_lon, 5)
+
+                coord_key = (round(new_lat, 3), round(new_lon, 3))
+                if coord_key not in existing_coords:
+                    existing_coords.add(coord_key)
+                    base_name = seed.area_name.split(",")[0].strip()
+                    parent_city = seed.area_name.split(",")[-1].strip() if "," in seed.area_name else ""
+                    city_suffix = f", {parent_city}" if parent_city else ""
+                    expanded.append(
+                        SubLocation(
+                            area_name=f"{base_name} Sector {ring}-{i+1}{city_suffix}",
+                            lat=new_lat,
+                            lon=new_lon,
+                            radius=3500.0,
+                        )
+                    )
+        ring += 1
+
+    return expanded
+
+
+def create_offline_fallback_plan(user_prompt: str, target_leads: Optional[int] = None) -> ActionPlan:
     """Provides a deterministic fallback plan if no API key is provided."""
     prompt_lower = user_prompt.lower()
     
@@ -293,7 +509,7 @@ def create_offline_fallback_plan(user_prompt: str) -> ActionPlan:
 
     sub_locations = get_default_sub_locations(country_code)
 
-    # Dynamic Keywords
+    # Dynamic Keywords based on query
     if any(w in prompt_lower for w in ["dentist", "dental", "clinic"]):
         keywords = ["Dentist", "Dental clinic"]
     elif any(w in prompt_lower for w in ["hotel", "motel", "resort"]):
@@ -303,23 +519,27 @@ def create_offline_fallback_plan(user_prompt: str) -> ActionPlan:
     elif any(w in prompt_lower for w in ["cafe", "coffee"]):
         keywords = ["Cafe", "Coffee shop"]
     else:
-        keywords = ["Restaurant", "Cafe", "Fast food restaurant"]
+        keywords = ["Restaurant", "Bangladeshi restaurant", "Cafe"]
 
-    target_leads = extract_target_count(user_prompt)
+    keywords = detect_and_preserve_core_keyword(user_prompt, keywords)
+    final_target = target_leads or extract_target_count(user_prompt)
+
+    if final_target and final_target > 100:
+        sub_locations = expand_sub_locations_for_target(sub_locations, final_target, keywords, country_code)
 
     return ActionPlan(
         user_prompt=user_prompt,
         keywords=keywords,
         country_code=country_code,
         language="en",
-        target_leads=target_leads,
+        target_leads=final_target,
         sub_locations=sub_locations,
         filters=FilterConfig(
             website_requirement="no_website" if is_no_website else "any",
             must_have_phone=True,
             min_rating=0.0,
             min_reviews=0,
-            max_pages_per_search=3,
+            max_pages_per_search=6 if (final_target and final_target >= 100) else 3,
         ),
         enrichment=EnrichmentConfig(
             enabled=not is_no_website,
@@ -333,11 +553,13 @@ def create_offline_fallback_plan(user_prompt: str) -> ActionPlan:
 def generate_plan(
     user_prompt: str,
     provider: Optional[str] = None,
+    target_leads: Optional[int] = None,
     save_to_disk: bool = True
 ) -> ActionPlan:
     """
     Main entry point for generating an ActionPlan.
     Tries configured LLM provider, falls back to alternative provider if key is available.
+    Ensures user's core keywords are preserved and scales sub-locations dynamically to meet lead targets.
     """
     chosen_provider = (provider or DEFAULT_LLM_PROVIDER).lower().strip()
     plan: Optional[ActionPlan] = None
@@ -364,12 +586,15 @@ def generate_plan(
     # If no API key or all providers failed, use intelligent fallback
     if not plan:
         print("[Info] No active LLM API key detected or API call failed. Using offline rule-based fallback planner.")
-        plan = create_offline_fallback_plan(user_prompt)
+        plan = create_offline_fallback_plan(user_prompt, target_leads=target_leads)
 
-    # Post-process plan to ensure target_leads and website enrichment are strictly honored
+    # Post-process plan to ensure target_leads, keywords preservation, and multi-location scaling
     if plan:
-        if plan.target_leads is None:
-            plan.target_leads = extract_target_count(user_prompt)
+        effective_target = target_leads or plan.target_leads or extract_target_count(user_prompt)
+        plan.target_leads = effective_target
+
+        # 1. CRITICAL KEYWORD PRESERVATION: Always preserve user's core requested business category at index 0
+        plan.keywords = detect_and_preserve_core_keyword(user_prompt, plan.keywords)
 
         # Smart Enrichment: If user did NOT say "no website", enable website enrichment by default
         prompt_lower = user_prompt.lower()
@@ -398,6 +623,17 @@ def generate_plan(
         if not plan.sub_locations or len(plan.sub_locations) == 0:
             print(f"[Warning] Plan returned 0 sub_locations for prompt '{user_prompt}'. Auto-generating major micro-zones for '{plan.country_code}'...", flush=True)
             plan.sub_locations = get_default_sub_locations(plan.country_code)
+
+        # 2. DYNAMIC GEO-SCALING FOR LARGE TARGETS (up to 120 leads/query with 6 pagination offsets)
+        if plan.target_leads and plan.target_leads > 0:
+            if plan.target_leads >= 100:
+                plan.filters.max_pages_per_search = 6
+            plan.sub_locations = expand_sub_locations_for_target(
+                base_sub_locations=plan.sub_locations,
+                target_leads=plan.target_leads,
+                keywords=plan.keywords,
+                country_code=plan.country_code or "bd",
+            )
 
         if not is_no_website and plan.filters.website_requirement != "no_website":
             plan.enrichment.enabled = True
