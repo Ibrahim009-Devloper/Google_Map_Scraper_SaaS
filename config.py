@@ -52,6 +52,7 @@ SUPABASE_URL = clean_env_str(os.getenv("SUPABASE_URL", "")).rstrip("/")
 SUPABASE_KEY = clean_env_str(os.getenv("SUPABASE_KEY", ""))
 SUPABASE_ANON_KEY = clean_env_str(os.getenv("SUPABASE_ANON_KEY", ""))
 GOOGLE_CLIENT_ID = clean_env_str(os.getenv("GOOGLE_CLIENT_ID", ""))
+PRIMARY_ADMIN_EMAIL = clean_env_str(os.getenv("ADMIN_EMAIL", "ibrahim009.developer@gmail.com")).lower()
 
 # If SUPABASE_ANON_KEY was not explicitly provided or invalid, check if SUPABASE_KEY is an anon key
 if not SUPABASE_ANON_KEY and SUPABASE_KEY:

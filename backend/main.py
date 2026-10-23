@@ -15,6 +15,8 @@ import io
 import csv
 import json
 import uuid
+import time
+import datetime
 import asyncio
 import threading
 from typing import Optional, List, Dict, Any
@@ -383,7 +385,8 @@ async def start_scraping_job(
     else:
         session_owner = security.get_client_identifier(request)
         is_authenticated = False
-        user_email = None
+        client_ip = session_owner.replace("anon_ip_", "").replace("_", ".")
+        user_email = f"Guest ({client_ip})"
 
     # Check anonymous quota (100 leads and 1 job limit)
     if not is_authenticated:
@@ -391,29 +394,59 @@ async def start_scraping_job(
         current_scraped = anon_usage["total_leads_scraped"]
         jobs_count = anon_usage["jobs_count"]
 
-        if jobs_count >= ANONYMOUS_JOB_LIMIT:
-            raise HTTPException(
-                status_code=status.HTTP_403_FORBIDDEN,
-                detail={
-                    "status": "limit_reached_login_required",
-                    "code": "GUEST_JOB_LIMIT_EXCEEDED",
-                    "message": "You have already completed your 1 free guest scraping session. Sign in to unlock 1,000 leads/day, 3 jobs/day, and 300 leads/job!",
-                    "current_quota": current_scraped,
-                    "jobs_count": jobs_count,
-                },
+        # If guest has exceeded free quota, log the search attempt so admin sees what they tried to search!
+        if jobs_count >= ANONYMOUS_JOB_LIMIT or current_scraped >= ANONYMOUS_LEAD_LIMIT:
+            reason = (
+                "Guest job limit reached (1 job max)"
+                if jobs_count >= ANONYMOUS_JOB_LIMIT
+                else f"Guest trial limit ({ANONYMOUS_LEAD_LIMIT} leads) reached"
+            )
+            blocked_job_id = f"job_guest_blocked_{uuid.uuid4().hex[:8]}"
+            await temp_store.create_job(
+                job_id=blocked_job_id,
+                session_owner=session_owner,
+                is_authenticated=False,
+                user_email=user_email,
+                prompt=payload.prompt,
+                target_leads=payload.target_leads or 100,
+                scrape_website=payload.scrape_website,
+            )
+            await temp_store.update_job(
+                blocked_job_id,
+                status="blocked_limit",
+                current_area="Blocked: Guest Trial Limit Exceeded (Login Required)",
+                error_message=f"{reason}. Sign in to continue searching.",
+                duration_seconds=0.1,
+            )
+            await temp_store.add_job_log(
+                blocked_job_id,
+                f"Guest search blocked: {reason} for IP {client_ip}. Prompt: '{payload.prompt}'",
+                "WARN",
             )
 
-        if current_scraped >= ANONYMOUS_LEAD_LIMIT:
-            raise HTTPException(
-                status_code=status.HTTP_403_FORBIDDEN,
-                detail={
-                    "status": "limit_reached_login_required",
-                    "code": "GUEST_LEAD_LIMIT_EXCEEDED",
-                    "message": f"Guest trial limit of {ANONYMOUS_LEAD_LIMIT} leads reached. Sign in to unlock 1,000 leads/day, 3 jobs/day, and 300 leads/job!",
-                    "current_quota": current_scraped,
-                    "jobs_count": jobs_count,
-                },
-            )
+            if jobs_count >= ANONYMOUS_JOB_LIMIT:
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail={
+                        "status": "limit_reached_login_required",
+                        "code": "GUEST_JOB_LIMIT_EXCEEDED",
+                        "message": "You have already completed your 1 free guest scraping session. Sign in to unlock 1,000 leads/day, 3 jobs/day, and 300 leads/job!",
+                        "current_quota": current_scraped,
+                        "jobs_count": jobs_count,
+                    },
+                )
+
+            if current_scraped >= ANONYMOUS_LEAD_LIMIT:
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail={
+                        "status": "limit_reached_login_required",
+                        "code": "GUEST_LEAD_LIMIT_EXCEEDED",
+                        "message": f"Guest trial limit of {ANONYMOUS_LEAD_LIMIT} leads reached. Sign in to unlock 1,000 leads/day, 3 jobs/day, and 300 leads/job!",
+                        "current_quota": current_scraped,
+                        "jobs_count": jobs_count,
+                    },
+                )
 
         # Cap requested target leads to remaining anonymous budget (max 100)
         remaining_leads = max(1, ANONYMOUS_LEAD_LIMIT - current_scraped)
@@ -475,7 +508,14 @@ async def start_scraping_job(
         is_authenticated=is_authenticated,
         prompt=payload.prompt,
         scrape_website=payload.scrape_website,
+        user_email=user_email,
+        target_leads=action_plan.target_leads or 100,
     )
+
+    await temp_store.add_job_log(job_id, f"Scraper job initialized for user: {user_email or session_owner}", "INFO")
+    await temp_store.add_job_log(job_id, f"Search prompt: '{payload.prompt}'", "PLAN")
+    await temp_store.add_job_log(job_id, f"Configuration: Target={action_plan.target_leads or 100} leads | Enrichment={action_plan.enrichment.enabled}", "CONFIG")
+    await temp_store.add_job_log(job_id, f"AI Geo-Planner mapped {len(action_plan.sub_locations)} sub-locations & {len(action_plan.keywords)} keywords.", "PLAN")
 
     # Audit in Supabase public.jobs table if authenticated
     if is_authenticated and user_id:
@@ -489,6 +529,7 @@ async def start_scraping_job(
 
     # Step 2: Background Task Worker
     async def _run_scraper_task():
+        t_start = datetime.datetime.now(datetime.timezone.utc)
         try:
             limit = action_plan.target_leads
             if not is_authenticated:
@@ -531,20 +572,36 @@ async def start_scraping_job(
                     enrichment_calls=enrichment_count,
                 )
                 if final_leads:
-                    supabase_db.save_leads_to_supabase(
-                        user_uid=user_id,
-                        job_id=job_id,
-                        leads=final_leads,
-                    )
+                    try:
+                        supabase_db.save_leads_to_supabase(
+                            user_uid=user_id,
+                            job_id=job_id,
+                            leads=final_leads,
+                        )
+                    except Exception as sync_err:
+                        print(f"[Supabase Cloud Sync Warning] Job {job_id}: {sync_err}", flush=True)
+                        await temp_store.add_job_log(job_id, f"Supabase cloud sync note: {sync_err}", "WARN")
         except Exception as exc:
+            import traceback
+            tb_str = traceback.format_exc()
             print(f"[Worker Error] Job {job_id} failed: {exc}", flush=True)
-            await temp_store.update_job(job_id, status="failed", current_area=f"Error: {str(exc)[:100]}")
+            t_now = datetime.datetime.now(datetime.timezone.utc)
+            dur_sec = max(0.0, round((t_now - t_start).total_seconds(), 1))
+            await temp_store.add_job_log(job_id, f"Scraper execution error: {str(exc)}", "ERROR")
+            await temp_store.add_job_log(job_id, f"Traceback:\n{tb_str[:800]}", "ERROR")
+            await temp_store.update_job(
+                job_id,
+                status="failed",
+                current_area=f"Error: {str(exc)[:100]}",
+                error_message=str(exc)[:1000],
+                duration_seconds=dur_sec,
+            )
             if is_authenticated and user_id:
                 supabase_db.update_job_record(
                     job_id=job_id,
                     status="failed",
                     leads_scraped=0,
-                    error_message=str(exc),
+                    error_message=str(exc)[:1000],
                 )
         finally:
             await job_manager.release(job_id, session_owner)
@@ -611,6 +668,9 @@ async def stream_scraping_events(job_id: str):
                 "status": current_status,
                 "current_area": current_job["current_area"],
                 "leads_count": current_job["leads_count"],
+                "target_leads": current_job.get("target_leads", 100),
+                "started_at": current_job.get("started_at"),
+                "duration_seconds": current_job.get("duration_seconds", 0.0),
                 "new_leads": new_leads,
                 "done": is_done,
             }
@@ -656,7 +716,24 @@ async def stop_scraping_job(
         raise HTTPException(status_code=404, detail="Job not found.")
 
     stopped = await job_manager.stop(job_id)
-    await temp_store.update_job(job_id, status="stopped", current_area="Stopped by user")
+    
+    # Calculate and persist exact elapsed duration up to the moment user stopped
+    created_str = job.get("started_at") or job.get("created_at")
+    dur_sec = float(job.get("duration_seconds") or 0.0)
+    if dur_sec <= 0.0 and created_str:
+        try:
+            t1 = datetime.datetime.fromisoformat(created_str.replace("Z", "+00:00"))
+            dur_sec = max(0.1, round((datetime.datetime.now(datetime.timezone.utc) - t1).total_seconds(), 1))
+        except Exception:
+            dur_sec = 0.0
+
+    await temp_store.update_job(
+        job_id,
+        status="stopped",
+        current_area="Stopped by user",
+        duration_seconds=dur_sec,
+    )
+    await temp_store.add_job_log(job_id, f"Scraper stopped by user after {dur_sec}s runtime.", "WARN")
 
     return {
         "status": "stopped",
@@ -918,8 +995,8 @@ async def get_my_dashboard_profile(
     plan["daily_jobs_limit"] = plan.get("jobs_per_day", 3)
     plan["max_leads_per_job"] = plan.get("leads_per_job", 300)
     plan["price_bdt"] = float(plan.get("price_bdt", 0.0))
-
-    is_admin = user.get("role") == "admin" or profile.get("role") == "admin"
+    user_email = (user.get("email") or profile.get("email") or "").strip().lower()
+    is_admin = (user.get("role") == "admin" or profile.get("role") == "admin") and (user_email in security.ADMIN_EMAILS)
 
     return {
         "user": user,
@@ -1009,18 +1086,143 @@ async def admin_update_user_plan_or_role(
     return {"status": "success", "user": updated}
 
 
-@app.get("/api/admin/jobs", tags=["Admin Dashboard"])
-async def get_admin_all_jobs(
+@app.get("/api/admin/crm/metrics", tags=["Admin CRM"])
+async def get_admin_crm_metrics(
     authorization: Optional[str] = Header(None),
-    limit: int = Query(50, ge=1, le=200),
 ):
     """
-    Lists all platform jobs with error details and completion statuses. Admin only.
+    Returns platform CRM metrics: Total searches, failure/error count,
+    error rate percentage, active scraping jobs, and average scraper runtime.
+    Admin authorization required.
     """
     sb_client = supabase_db.get_supabase_client()
     security.require_admin_user(authorization, supabase_client=sb_client)
-    jobs = supabase_db.get_admin_jobs(limit=limit)
+    return supabase_db.get_crm_metrics()
+
+
+@app.get("/api/admin/jobs", tags=["Admin Dashboard"])
+async def get_admin_all_jobs(
+    authorization: Optional[str] = Header(None),
+    search: Optional[str] = Query(None, description="Search by user email, name, or prompt keyword"),
+    status: Optional[str] = Query(None, description="Filter by status: running, completed, failed, stopped, blocked_limit"),
+    errors_only: bool = Query(False, description="Filter only searches that experienced errors"),
+    user_type: Optional[str] = Query(None, description="Filter by user type: guest, user, or all"),
+    limit: int = Query(50, ge=1, le=200),
+):
+    """
+    Lists platform scraping jobs across both registered users and guest sessions.
+    Returns prompt query, execution duration, error reasons, and lead counts.
+    Admin only.
+    """
+    sb_client = supabase_db.get_supabase_client()
+    security.require_admin_user(authorization, supabase_client=sb_client)
+    jobs = supabase_db.get_admin_jobs(
+        limit=limit,
+        search=search,
+        status=status,
+        errors_only=errors_only,
+        user_type=user_type,
+    )
     return {"count": len(jobs), "jobs": jobs}
+
+
+@app.get("/api/admin/jobs/{job_id}/logs", tags=["Admin CRM"])
+async def get_admin_job_logs(
+    job_id: str,
+    authorization: Optional[str] = Header(None),
+):
+    """
+    Retrieves chronological diagnostic event logs for a specific scraping job
+    to debug API failures, timeouts, rate limits, or enrichment problems.
+    Admin only.
+    """
+    sb_client = supabase_db.get_supabase_client()
+    security.require_admin_user(authorization, supabase_client=sb_client)
+
+    logs = await temp_store.get_job_logs(job_id)
+    job_info = await temp_store.get_job(job_id)
+
+    if not job_info:
+        try:
+            resp = sb_client.table("jobs").select("*").eq("id", job_id).execute()
+            if resp.data:
+                job_info = resp.data[0]
+        except Exception:
+            pass
+
+    if not logs and job_info:
+        # Generate diagnostic fallback trace from job state
+        logs = [
+            {
+                "id": 1,
+                "job_id": job_id,
+                "timestamp": str(job_info.get("created_at") or ""),
+                "level": "INFO",
+                "message": f"Job initialized for prompt: '{job_info.get('prompt')}'"
+            },
+            {
+                "id": 2,
+                "job_id": job_id,
+                "timestamp": str(job_info.get("completed_at") or job_info.get("created_at") or ""),
+                "level": "SUCCESS" if job_info.get("status") == "completed" else "WARN",
+                "message": f"Status: {job_info.get('status')} | Harvested: {job_info.get('leads_scraped') or job_info.get('leads_count', 0)}/{job_info.get('target_leads', 100)}"
+            }
+        ]
+        if job_info.get("error_message"):
+            logs.append({
+                "id": 3,
+                "job_id": job_id,
+                "timestamp": str(job_info.get("completed_at") or ""),
+                "level": "ERROR",
+                "message": f"Failure reason: {job_info.get('error_message')}"
+            })
+
+    raw_text = "\n".join(f"[{l.get('timestamp')}] [{l.get('level')}] {l.get('message')}" for l in logs)
+
+    return {
+        "job_id": job_id,
+        "job_info": job_info,
+        "count": len(logs),
+        "logs": logs,
+        "raw_text": raw_text,
+    }
+
+
+@app.get("/api/admin/jobs/{job_id}/leads", tags=["Admin CRM"])
+async def get_admin_job_leads(
+    job_id: str,
+    authorization: Optional[str] = Header(None),
+    limit: int = Query(100, ge=1, le=500),
+):
+    """
+    Inspects harvested lead records for a specific scraping job so admins can verify
+    data quality or investigate missing contact information for users.
+    Admin only.
+    """
+    sb_client = supabase_db.get_supabase_client()
+    security.require_admin_user(authorization, supabase_client=sb_client)
+
+    # 1. Check local SQLite cache
+    leads = await temp_store.get_temp_leads(job_id)
+    if leads:
+        return {
+            "job_id": job_id,
+            "count": len(leads),
+            "source": "local_cache",
+            "leads": [l.model_dump() for l in leads[:limit]],
+        }
+
+    # 2. Check Supabase saved_leads
+    try:
+        resp = sb_client.table("saved_leads").select("*").eq("job_id", job_id).limit(limit).execute()
+        return {
+            "job_id": job_id,
+            "count": len(resp.data or []),
+            "source": "cloud_db",
+            "leads": resp.data or [],
+        }
+    except Exception as e:
+        return {"job_id": job_id, "count": 0, "leads": [], "error": str(e)}
 
 
 @app.get("/api/admin/payments", tags=["Admin Dashboard"])

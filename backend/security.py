@@ -9,7 +9,10 @@ from fastapi import Request, Header, HTTPException, status
 from google.oauth2 import id_token
 from google.auth.transport import requests as google_requests
 
-from config import GOOGLE_CLIENT_ID
+from config import GOOGLE_CLIENT_ID, PRIMARY_ADMIN_EMAIL
+
+# Whitelist of verified administrators. Defaults exclusively to PRIMARY_ADMIN_EMAIL.
+ADMIN_EMAILS = {PRIMARY_ADMIN_EMAIL}
 
 
 # Common disposable / temporary email domains to strictly block
@@ -88,6 +91,13 @@ def verify_auth_token(token: str, supabase_client: Optional[Any] = None) -> Dict
     if clean_token.lower().startswith("bearer "):
         clean_token = clean_token[7:].strip()
 
+    if not clean_token or clean_token.lower() in ("null", "undefined"):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Authentication token is invalid (received empty or null token). Please sign in.",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+
     user_id: Optional[str] = None
     verified_email: Optional[str] = None
     full_name: str = ""
@@ -109,8 +119,8 @@ def verify_auth_token(token: str, supabase_client: Optional[Any] = None) -> Dict
                 full_name = meta.get("full_name") or meta.get("name") or ""
                 provider = sb_user.app_metadata.get("provider", "supabase")
                 email_verified = sb_user.email_confirmed_at is not None
-        except Exception:
-            pass
+        except Exception as sb_err:
+            print(f"[AUTH DIAGNOSTIC] Supabase get_user failed for token ({clean_token[:15]}...): {type(sb_err).__name__}: {sb_err}")
 
     # Strategy 2: Verify via Google ID Token
     if not verified_email:
@@ -131,10 +141,11 @@ def verify_auth_token(token: str, supabase_client: Optional[Any] = None) -> Dict
             full_name = id_info.get("name") or id_info.get("given_name", "")
             provider = "google"
             email_verified = True
-        except Exception:
+        except Exception as g_err:
             pass
 
     if not verified_email:
+        print(f"[AUTH DIAGNOSTIC] verify_auth_token REJECTED token: {clean_token[:25]} (len={len(clean_token)})")
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Invalid or expired authentication token. Please sign in with Supabase Auth or Google.",
@@ -149,6 +160,8 @@ def verify_auth_token(token: str, supabase_client: Optional[Any] = None) -> Dict
         )
 
     user_uid = user_id if user_id else generate_user_uid(verified_email)
+
+    is_admin_email = verified_email.lower().strip() in ADMIN_EMAILS
 
     # Strategy 3: Load Role & Plan from Supabase profiles table
     if supabase_client is not None:
@@ -165,12 +178,25 @@ def verify_auth_token(token: str, supabase_client: Optional[Any] = None) -> Dict
                 user_id = str(prof["id"])
                 user_uid = user_id
                 role = prof.get("role", "user")
+                if is_admin_email and role != "admin":
+                    role = "admin"
+                    # Synchronize admin role back to profile in background
+                    try:
+                        supabase_client.table("profiles").update({"role": "admin"}).eq("id", user_id).execute()
+                    except Exception:
+                        pass
+                elif not is_admin_email and role == "admin":
+                    # Self-healing security demotion: Non-whitelisted accounts can NEVER be admin
+                    role = "user"
+                    try:
+                        supabase_client.table("profiles").update({"role": "user"}).eq("id", user_id).execute()
+                    except Exception:
+                        pass
                 plan_id = prof.get("plan_id", "free")
                 email_verified = prof.get("email_verified", email_verified)
                 plan_details = prof.get("plans")
             elif user_id:
-                # Upsert profile record (Only ibrahim009.developer@gmail.com gets admin role)
-                is_admin_email = verified_email.lower().strip() == "ibrahim009.developer@gmail.com"
+                # Upsert profile record
                 role = "admin" if is_admin_email else "user"
                 new_profile = {
                     "id": user_id,
@@ -222,6 +248,7 @@ def get_current_user_required(
     FastAPI dependency that enforces an authenticated user with Supabase Auth.
     """
     if not authorization:
+        print("[AUTH DIAGNOSTIC] get_current_user_required: Authorization header is None or missing!")
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Missing Authorization header. Sign in required.",
@@ -239,10 +266,15 @@ def require_admin_user(
     Raises 403 Forbidden if user is authenticated but not an admin.
     """
     user = get_current_user_required(authorization, supabase_client=supabase_client)
-    if user.get("role") != "admin":
+    user_role = user.get("role")
+    user_email = (user.get("email") or "").strip().lower()
+    
+    # Strict Double-Lock: Role MUST be "admin" AND email MUST be in ADMIN_EMAILS
+    if user_role != "admin" or user_email not in ADMIN_EMAILS:
+        print(f"[SECURITY ALERT] Unauthorized admin access attempt blocked: email='{user_email}', role='{user_role}'")
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
-            detail="Forbidden: Admin access required.",
+            detail="Forbidden: Admin access strictly prohibited. Only verified system owners are authorized.",
         )
     return user
 

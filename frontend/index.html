@@ -507,41 +507,83 @@
 
           <!-- Right Side Column: Visual Geographic Map & Extraction Intelligence (4 cols) -->
           <div class="lg:col-span-4 flex flex-col gap-6">
-            <!-- Geographic Target Card -->
-            <div class="rounded-xl bg-surface-container-lowest p-6 shadow-sm flex flex-col justify-between border border-surface-container-high/30">
+            <!-- Live Harvesting Radar & Real-Time Action Card -->
+            <div class="rounded-xl bg-surface-container-lowest p-6 shadow-sm flex flex-col justify-between border border-surface-container-high/30" id="liveRadarCard">
               <div class="flex items-center justify-between mb-4">
                 <div class="flex flex-col">
-                  <span class="font-label text-xs uppercase tracking-wider text-secondary font-semibold">Active Scraping Hub</span>
+                  <div class="flex items-center gap-1.5 mb-0.5">
+                    <span class="w-2 h-2 rounded-full bg-secondary" id="radarStatusDot"></span>
+                    <span class="font-label text-xs uppercase tracking-wider text-secondary font-semibold" id="radarStatusLabel">Active Scraping Hub</span>
+                  </div>
                   <span class="font-headline font-bold text-base text-on-surface" id="activeHubName">Ready for AI Geo-Split</span>
                 </div>
-                <span class="material-symbols-outlined text-primary text-[22px]">share_location</span>
-              </div>
-
-              <!-- Map Container / Visual representation -->
-              <div class="w-full h-44 bg-surface-container rounded-xl relative overflow-hidden shadow-inner mb-4 flex items-center justify-center" id="activeHubMap">
-                <div class="absolute inset-0 bg-gradient-to-t from-inverse-surface/80 via-transparent to-transparent z-10"></div>
-                <div class="text-center z-20 flex flex-col items-center gap-1 text-on-surface-variant">
-                  <span class="material-symbols-outlined text-[36px] text-primary">pin_drop</span>
-                  <span class="text-xs font-semibold text-on-surface" id="mapSubText">Hierarchical Geo-Coordinates</span>
-                </div>
-                <div class="absolute bottom-3 left-3 right-3 flex items-center justify-between text-on-primary z-20">
-                  <span class="font-label text-xs font-semibold" id="hubClusterText">Cluster: Ready</span>
-                  <span class="text-[11px] font-body opacity-90" id="hubCoordsText">Lat/Lon: --</span>
+                <!-- Real-Time Duration Timer Badge -->
+                <div class="flex items-center gap-1.5 px-3 py-1 rounded-full bg-surface-container border border-outline-variant/30 text-xs font-mono font-semibold text-on-surface shadow-xs" id="radarTimerBadge">
+                  <span class="material-symbols-outlined text-[15px] text-primary" id="radarTimerIcon">timer</span>
+                  <span id="hubDurationDisplay">00:00</span>
                 </div>
               </div>
 
-              <div class="flex flex-col gap-2 pt-1">
+              <!-- Animated Radar Map Container -->
+              <div class="w-full h-44 bg-slate-900 rounded-xl relative overflow-hidden shadow-inner mb-4 flex items-center justify-center border border-slate-800" id="activeHubMap">
+                <!-- Grid background lines -->
+                <div class="absolute inset-0 opacity-15 bg-[radial-gradient(#38bdf8_1px,transparent_1px)] [background-size:16px_16px]"></div>
+
+                <!-- Concentric Circular Radar Grid Lines -->
+                <div class="absolute w-20 h-20 rounded-full border border-sky-500/20"></div>
+                <div class="absolute w-32 h-32 rounded-full border border-sky-500/15"></div>
+                <div class="absolute w-44 h-44 rounded-full border border-sky-500/10"></div>
+
+                <!-- Animated Ping Ripple Waves (Active when scraping) -->
+                <div class="absolute w-20 h-20 rounded-full bg-sky-500/20 radar-ping-ring hidden" id="radarPingWave1"></div>
+                <div class="absolute w-20 h-20 rounded-full bg-sky-500/20 radar-ping-ring-delayed hidden" id="radarPingWave2"></div>
+
+                <!-- Rotating Radar Sweep Beam (Active when scraping) -->
+                <div class="absolute inset-0 flex items-center justify-center pointer-events-none hidden" id="radarBeamContainer">
+                  <div class="w-44 h-44 rounded-full radar-sweep-beam relative" style="background: conic-gradient(from 0deg at 50% 50%, rgba(56, 189, 248, 0) 0deg, rgba(56, 189, 248, 0.45) 55deg, transparent 56deg);"></div>
+                </div>
+
+                <!-- Center Animated Icon & Status -->
+                <div class="relative z-20 flex flex-col items-center gap-1 px-4 text-center">
+                  <div class="w-11 h-11 rounded-full bg-slate-800/90 border border-sky-400/40 flex items-center justify-center shadow-lg transition-all" id="radarCenterIconBox">
+                    <span class="material-symbols-outlined text-[26px] text-sky-400" id="radarCenterIcon">radar</span>
+                  </div>
+                  <span class="text-xs font-semibold text-white tracking-wide" id="mapSubText">Hierarchical Geo-Coordinates</span>
+                  <p class="text-[11px] font-body text-sky-200/90 max-w-[240px] truncate" id="radarActionText">Ready to start autonomous harvest</p>
+                </div>
+
+                <!-- Bottom Status Pill Overlay -->
+                <div class="absolute bottom-2.5 left-3 right-3 flex items-center justify-between text-white/90 z-20 text-[11px] font-body">
+                  <span class="font-label font-semibold flex items-center gap-1.5 text-sky-300" id="hubClusterText">
+                    <span class="w-1.5 h-1.5 rounded-full bg-sky-400 animate-pulse" id="hubClusterDot"></span>
+                    <span id="hubClusterLabel">Cluster: Ready</span>
+                  </span>
+                  <span class="text-white/70 font-mono text-[10px]" id="hubCoordsText">Live Scanner</span>
+                </div>
+              </div>
+
+              <!-- Client-Friendly Real-Time Extraction Details (No Technical Jargon) -->
+              <div class="flex flex-col gap-2 pt-1 border-t border-surface-container-high/40">
                 <div class="flex items-center justify-between text-xs">
-                  <span class="text-secondary">Current Sub-Area:</span>
-                  <span class="font-semibold text-on-surface truncate max-w-[180px]" id="hubCurrentArea">--</span>
+                  <span class="text-secondary flex items-center gap-1.5">
+                    <span class="material-symbols-outlined text-[15px] text-primary">pin_drop</span>
+                    <span>Current Target Zone:</span>
+                  </span>
+                  <span class="font-semibold text-on-surface truncate max-w-[170px]" id="hubCurrentArea">Ready</span>
                 </div>
                 <div class="flex items-center justify-between text-xs">
-                  <span class="text-secondary">Pipeline Transport:</span>
-                  <span class="font-semibold text-tertiary">High-Speed Direct HTTP</span>
+                  <span class="text-secondary flex items-center gap-1.5">
+                    <span class="material-symbols-outlined text-[15px] text-emerald-600">storefront</span>
+                    <span>Zone Harvest:</span>
+                  </span>
+                  <span class="font-semibold text-emerald-600 font-mono" id="hubZoneLeads">0 Leads</span>
                 </div>
                 <div class="flex items-center justify-between text-xs">
-                  <span class="text-secondary">Local WAL Mode Cache:</span>
-                  <span class="font-semibold text-primary">data/temp_cache.db</span>
+                  <span class="text-secondary flex items-center gap-1.5">
+                    <span class="material-symbols-outlined text-[15px] text-tertiary">verified_user</span>
+                    <span>Quality Check:</span>
+                  </span>
+                  <span class="font-semibold text-on-surface font-body text-[11px]" id="hubQualityStatus">100% Unique & Verified</span>
                 </div>
               </div>
             </div>
@@ -874,7 +916,7 @@
 
   <!-- Modal: Admin Dashboard (Users, Platform Jobs, Analytics & Payments) -->
   <div id="adminDashboardModal" class="hidden fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm p-4 overflow-y-auto">
-    <div class="bg-surface-container-lowest rounded-2xl max-w-5xl w-full p-6 md:p-8 shadow-2xl border border-amber-300/40 flex flex-col gap-6 max-h-[92vh] overflow-y-auto">
+    <div class="bg-surface-container-lowest rounded-2xl max-w-6xl w-full p-6 md:p-8 shadow-2xl border border-amber-300/40 flex flex-col gap-6 max-h-[92vh] overflow-y-auto">
       
       <!-- Header -->
       <div class="flex items-center justify-between pb-4 border-b border-surface-container-high/40">
@@ -917,8 +959,10 @@
         <button type="button" id="admTabUsers" class="flex-1 py-1.5 rounded-md font-semibold text-primary bg-surface-container-lowest shadow-sm" onclick="switchAdminTab('users')">
           Users &amp; Roles
         </button>
-        <button type="button" id="admTabJobs" class="flex-1 py-1.5 rounded-md font-semibold text-secondary hover:text-on-surface" onclick="switchAdminTab('jobs')">
-          Platform Jobs &amp; Errors
+        <button type="button" id="admTabJobs" class="flex-1 py-1.5 rounded-md font-semibold text-secondary hover:text-on-surface flex items-center justify-center gap-1.5" onclick="switchAdminTab('jobs')">
+          <span class="material-symbols-outlined text-[15px]">manage_search</span>
+          <span>User Searches &amp; Scraper CRM</span>
+          <span id="crmErrorBadge" class="hidden px-2 py-0.5 rounded-full text-[10px] font-bold bg-red-100 text-red-700">0 Errors</span>
         </button>
         <button type="button" id="admTabPayments" class="flex-1 py-1.5 rounded-md font-semibold text-secondary hover:text-on-surface" onclick="switchAdminTab('payments')">
           Payments Ledger
@@ -949,24 +993,105 @@
         </div>
       </div>
 
-      <!-- Tab View 2: Jobs Audit Table -->
-      <div id="admJobsView" class="hidden border border-surface-container-high/40 rounded-xl overflow-hidden bg-surface-container-low">
-        <div class="overflow-x-auto max-h-72">
-          <table class="w-full text-left text-xs font-body">
-            <thead class="bg-surface-container font-label uppercase text-[10px] tracking-wider text-secondary border-b border-surface-container-high">
-              <tr>
-                <th class="px-3.5 py-2.5">Job ID</th>
-                <th class="px-3.5 py-2.5">User</th>
-                <th class="px-3.5 py-2.5">Prompt</th>
-                <th class="px-3.5 py-2.5">Status</th>
-                <th class="px-3.5 py-2.5">Leads</th>
-                <th class="px-3.5 py-2.5">Error Note</th>
-              </tr>
-            </thead>
-            <tbody id="admJobsTableBody" class="divide-y divide-surface-container-high/30">
-              <tr><td colspan="6" class="px-3.5 py-4 text-center text-secondary">Loading jobs audit...</td></tr>
-            </tbody>
-          </table>
+      <!-- Tab View 2: User Searches & Scraper CRM (Debugging Command Center) -->
+      <div id="admJobsView" class="hidden flex flex-col gap-4">
+        <!-- CRM Metric Cards Ribbon -->
+        <div class="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-2.5">
+          <div class="p-2.5 rounded-xl bg-surface-container-low border border-surface-container-high/60 flex flex-col cursor-pointer hover:bg-surface-container transition-colors" onclick="filterAdminCrm('all')">
+            <span class="text-[10px] font-label font-semibold uppercase text-secondary">Total Searches</span>
+            <span class="font-headline font-bold text-base text-on-surface mt-0.5" id="crmTotalSearches">0</span>
+          </div>
+          <div class="p-2.5 rounded-xl bg-purple-50/60 border border-purple-200/80 flex flex-col cursor-pointer hover:bg-purple-50 transition-colors" onclick="filterAdminCrm('user')">
+            <div class="flex items-center justify-between">
+              <span class="text-[10px] font-label font-semibold uppercase text-purple-800">Registered</span>
+              <span class="text-[9px] font-semibold text-purple-700 underline">Filter</span>
+            </div>
+            <span class="font-headline font-bold text-base text-purple-800 mt-0.5" id="crmUserSearches">0</span>
+          </div>
+          <div class="p-2.5 rounded-xl bg-amber-50/60 border border-amber-200/80 flex flex-col cursor-pointer hover:bg-amber-50 transition-colors" onclick="filterAdminCrm('guest')">
+            <div class="flex items-center justify-between">
+              <span class="text-[10px] font-label font-semibold uppercase text-amber-800">Guest Searches</span>
+              <span class="text-[9px] font-semibold text-amber-700 underline">Filter</span>
+            </div>
+            <span class="font-headline font-bold text-base text-amber-800 mt-0.5" id="crmGuestSearches">0</span>
+          </div>
+          <div class="p-2.5 rounded-xl bg-red-50/60 border border-red-200/80 flex flex-col cursor-pointer hover:bg-red-50 transition-colors" onclick="filterAdminCrm('failed')">
+            <div class="flex items-center justify-between">
+              <span class="text-[10px] font-label font-semibold uppercase text-red-700">Errors</span>
+              <span class="text-[9px] font-semibold text-red-600 underline">Filter</span>
+            </div>
+            <span class="font-headline font-bold text-base text-red-700 mt-0.5" id="crmFailedSearches">0</span>
+          </div>
+          <div class="p-2.5 rounded-xl bg-blue-50/60 border border-blue-200/80 flex flex-col cursor-pointer hover:bg-blue-50 transition-colors" onclick="filterAdminCrm('running')">
+            <span class="text-[10px] font-label font-semibold uppercase text-blue-700">Running</span>
+            <span class="font-headline font-bold text-base text-blue-700 mt-0.5 flex items-center gap-1.5">
+              <span class="w-2 h-2 rounded-full bg-blue-600 animate-pulse"></span>
+              <span id="crmRunningSearches">0</span>
+            </span>
+          </div>
+          <div class="p-2.5 rounded-xl bg-surface-container-low border border-surface-container-high/60 flex flex-col">
+            <span class="text-[10px] font-label font-semibold uppercase text-secondary">Avg Runtime</span>
+            <span class="font-headline font-bold text-base text-secondary mt-0.5" id="crmAvgDuration">0s</span>
+          </div>
+        </div>
+
+        <!-- CRM Toolbar: Search, Filter Tabs, Refresh -->
+        <div class="flex flex-col sm:flex-row items-stretch sm:items-center justify-between gap-3 p-2 rounded-xl bg-surface-container border border-surface-container-high/40">
+          <!-- Real-Time Search Box -->
+          <div class="relative flex-1">
+            <span class="material-symbols-outlined text-[18px] text-secondary absolute left-3 top-2.5">search</span>
+            <input type="text" id="crmSearchInput" placeholder="Search by IP, email, search query keyword, or job ID..." oninput="handleCrmSearch(this.value)" class="w-full pl-9 pr-8 py-2 rounded-lg bg-surface-container-lowest text-xs text-on-surface border border-surface-container-high focus:outline-none focus:ring-1 focus:ring-primary shadow-2xs" />
+            <button type="button" id="crmSearchClearBtn" class="hidden absolute right-2.5 top-2.5 text-secondary hover:text-on-surface" onclick="clearCrmSearch()">
+              <span class="material-symbols-outlined text-[16px]">close</span>
+            </button>
+          </div>
+
+          <!-- Status & User Filters -->
+          <div class="flex items-center gap-1 overflow-x-auto text-xs font-label">
+            <button type="button" id="crmTabFilterAll" class="px-2.5 py-1.5 rounded-lg font-semibold bg-surface-container-lowest text-primary shadow-xs" onclick="filterAdminCrm('all')">
+              All
+            </button>
+            <button type="button" id="crmTabFilterUser" class="px-2.5 py-1.5 rounded-lg font-semibold text-secondary hover:text-purple-700 hover:bg-purple-50 transition-colors flex items-center gap-1" onclick="filterAdminCrm('user')">
+              <span class="w-1.5 h-1.5 rounded-full bg-purple-500"></span> Registered
+            </button>
+            <button type="button" id="crmTabFilterGuest" class="px-2.5 py-1.5 rounded-lg font-semibold text-secondary hover:text-amber-700 hover:bg-amber-50 transition-colors flex items-center gap-1" onclick="filterAdminCrm('guest')">
+              <span class="w-1.5 h-1.5 rounded-full bg-amber-500"></span> Guests (Non-Logged)
+            </button>
+            <button type="button" id="crmTabFilterErrors" class="px-2.5 py-1.5 rounded-lg font-semibold text-secondary hover:text-red-700 hover:bg-red-50 flex items-center gap-1 transition-colors" onclick="filterAdminCrm('failed')">
+              <span class="w-1.5 h-1.5 rounded-full bg-red-500"></span> Errors
+            </button>
+            <button type="button" id="crmTabFilterRunning" class="px-2.5 py-1.5 rounded-lg font-semibold text-secondary hover:text-blue-700 hover:bg-blue-50 transition-colors" onclick="filterAdminCrm('running')">
+              Running
+            </button>
+            <button type="button" id="crmTabFilterCompleted" class="px-2.5 py-1.5 rounded-lg font-semibold text-secondary hover:text-emerald-700 hover:bg-emerald-50 transition-colors" onclick="filterAdminCrm('completed')">
+              Completed
+            </button>
+            <button type="button" onclick="loadAdminJobs()" title="Refresh" class="p-1.5 rounded-lg text-secondary hover:text-on-surface hover:bg-surface-container-high transition-colors ml-1">
+              <span class="material-symbols-outlined text-[18px]">refresh</span>
+            </button>
+          </div>
+        </div>
+
+        <!-- CRM Table -->
+        <div class="border border-surface-container-high/40 rounded-xl overflow-hidden bg-surface-container-low shadow-xs">
+          <div class="overflow-x-auto max-h-96">
+            <table class="w-full text-left text-xs font-body">
+              <thead class="bg-surface-container font-label uppercase text-[10px] tracking-wider text-secondary border-b border-surface-container-high sticky top-0 z-10 backdrop-blur-xs">
+                <tr>
+                  <th class="px-3.5 py-2.5">User / Client</th>
+                  <th class="px-3.5 py-2.5">Search Query &amp; Params</th>
+                  <th class="px-3.5 py-2.5">Duration</th>
+                  <th class="px-3.5 py-2.5">Status &amp; Health</th>
+                  <th class="px-3.5 py-2.5">Leads Harvested</th>
+                  <th class="px-3.5 py-2.5">Error Note</th>
+                  <th class="px-3.5 py-2.5 text-right">Actions</th>
+                </tr>
+              </thead>
+              <tbody id="admJobsTableBody" class="divide-y divide-surface-container-high/30">
+                <tr><td colspan="7" class="px-3.5 py-6 text-center text-secondary">Loading CRM searches and scraper activity...</td></tr>
+              </tbody>
+            </table>
+          </div>
         </div>
       </div>
 
@@ -1197,6 +1322,134 @@
       <div class="flex flex-col gap-3" id="leadModalContent">
         <!-- Injected via app.js -->
       </div>
+    </div>
+  <!-- Modal: Admin Scraper Diagnostic Logs Inspector -->
+  <div id="adminLogModal" class="hidden fixed inset-0 z-50 flex items-center justify-center bg-black/75 backdrop-blur-md p-4 overflow-y-auto" onclick="if (event.target === this) closeAdminLogModal()">
+    <div class="bg-slate-950 text-slate-100 rounded-2xl max-w-4xl w-full p-5 md:p-6 shadow-2xl border border-slate-800 flex flex-col gap-4 max-h-[90vh]">
+      
+      <!-- Modal Header -->
+      <div class="flex flex-col sm:flex-row sm:items-center justify-between gap-3 pb-3 border-b border-slate-800/80">
+        <div class="flex items-center gap-3">
+          <div class="w-9 h-9 rounded-xl bg-slate-900 border border-slate-800 flex items-center justify-center text-primary-fixed">
+            <span class="material-symbols-outlined text-[20px]">terminal</span>
+          </div>
+          <div>
+            <div class="flex items-center gap-2">
+              <h3 class="font-headline font-bold text-sm text-slate-100">Scraper Diagnostics &amp; Real-time Logs</h3>
+              <span id="admLogStatusBadge" class="px-2 py-0.5 rounded text-[10px] font-bold uppercase bg-slate-800 text-slate-300">Loading</span>
+            </div>
+            <div class="flex flex-wrap items-center gap-2 text-[11px] text-slate-400 mt-0.5">
+              <span>Job: <code id="admLogJobId" class="text-primary-fixed font-mono select-all">--</code></span>
+              <span>•</span>
+              <span>User: <span id="admLogUser" class="text-slate-200">--</span></span>
+              <span>•</span>
+              <span>Runtime: <span id="admLogDuration" class="text-emerald-400 font-semibold font-mono">--</span></span>
+            </div>
+          </div>
+        </div>
+
+        <div class="flex items-center gap-2">
+          <button type="button" onclick="copyAdminLogs()" class="px-2.5 py-1.5 rounded-lg bg-slate-900 hover:bg-slate-800 text-slate-200 text-xs font-semibold border border-slate-800 flex items-center gap-1.5 transition-colors" title="Copy raw logs to clipboard">
+            <span class="material-symbols-outlined text-[15px]">content_copy</span>
+            <span>Copy Logs</span>
+          </button>
+          <button type="button" onclick="closeAdminLogModal()" class="w-8 h-8 rounded-lg flex items-center justify-center text-slate-400 hover:text-slate-100 hover:bg-slate-900 transition-colors">
+            <span class="material-symbols-outlined text-[18px]">close</span>
+          </button>
+        </div>
+      </div>
+
+      <!-- Log Toolbar: Filter inside logs & Level buttons -->
+      <div class="flex flex-col sm:flex-row items-stretch sm:items-center justify-between gap-2.5">
+        <div class="relative flex-1">
+          <span class="material-symbols-outlined text-[16px] text-slate-400 absolute left-3 top-2.5">search</span>
+          <input type="text" id="logSearchInput" placeholder="Filter log messages..." oninput="filterModalLogs(this.value)" class="w-full pl-8 pr-3 py-1.5 rounded-lg bg-slate-900 text-xs text-slate-100 border border-slate-800 focus:outline-none focus:border-primary-fixed" />
+        </div>
+        <div class="flex items-center gap-1 text-xs">
+          <button type="button" id="logFilterAll" class="px-2.5 py-1 rounded-md text-[11px] font-semibold bg-slate-800 text-white" onclick="setLogFilter('all')">
+            All (<span id="logCountAll">0</span>)
+          </button>
+          <button type="button" id="logFilterErrors" class="px-2.5 py-1 rounded-md text-[11px] font-semibold bg-slate-900 text-red-400 hover:bg-slate-800 flex items-center gap-1" onclick="setLogFilter('error')">
+            <span class="w-1.5 h-1.5 rounded-full bg-red-500"></span> Errors (<span id="logCountErrors">0</span>)
+          </button>
+          <button type="button" id="logFilterWarn" class="px-2.5 py-1 rounded-md text-[11px] font-semibold bg-slate-900 text-amber-400 hover:bg-slate-800" onclick="setLogFilter('warn')">
+            Warnings (<span id="logCountWarn">0</span>)
+          </button>
+          <button type="button" id="logFilterInfo" class="px-2.5 py-1 rounded-md text-[11px] font-semibold bg-slate-900 text-slate-300 hover:bg-slate-800" onclick="setLogFilter('info')">
+            Info
+          </button>
+        </div>
+      </div>
+
+      <!-- Terminal Body -->
+      <div class="p-4 rounded-xl bg-slate-900/90 border border-slate-800/80 font-mono text-xs text-slate-300 flex flex-col gap-1.5 max-h-[55vh] overflow-y-auto leading-relaxed select-text" id="adminLogBody">
+        <div class="text-slate-500 text-center py-8">Loading diagnostic logs...</div>
+      </div>
+
+      <!-- Footer Info -->
+      <div class="flex items-center justify-between text-[11px] text-slate-500 pt-1 border-t border-slate-900">
+        <span>Prompt: <span id="admLogPrompt" class="text-slate-400 italic font-sans">--</span></span>
+        <span class="font-mono text-[10px]">Log records captured: <strong id="admLogTotalCount" class="text-slate-300">0</strong></span>
+      </div>
+
+    </div>
+  </div>
+
+  <!-- Modal: Harvested Leads Inspector -->
+  <div id="adminLeadsModal" class="hidden fixed inset-0 z-50 flex items-center justify-center bg-black/65 backdrop-blur-sm p-4 overflow-y-auto" onclick="if (event.target === this) closeAdminLeadsModal()">
+    <div class="bg-surface-container-lowest rounded-2xl max-w-5xl w-full p-5 md:p-6 shadow-2xl border border-surface-container-high/60 flex flex-col gap-4 max-h-[90vh]">
+      
+      <!-- Header -->
+      <div class="flex items-center justify-between pb-3 border-b border-surface-container-high/40">
+        <div class="flex items-center gap-3">
+          <div class="w-9 h-9 rounded-xl bg-tertiary-fixed/30 text-tertiary flex items-center justify-center shadow-2xs">
+            <span class="material-symbols-outlined text-[20px]">dataset</span>
+          </div>
+          <div>
+            <div class="flex items-center gap-2">
+              <h3 class="font-headline font-bold text-sm text-on-surface">Harvested Leads Inspector</h3>
+              <span id="admLeadsCountBadge" class="px-2 py-0.5 rounded text-[10px] font-bold bg-surface-container text-secondary">0 Leads</span>
+            </div>
+            <p class="text-[11px] text-secondary">Inspect exact businesses, contact info, and website enrichment scraped for this search.</p>
+          </div>
+        </div>
+
+        <button type="button" onclick="closeAdminLeadsModal()" class="w-8 h-8 rounded-lg flex items-center justify-center text-secondary hover:text-on-surface hover:bg-surface-container transition-colors">
+          <span class="material-symbols-outlined text-[18px]">close</span>
+        </button>
+      </div>
+
+      <!-- Leads Search Filter -->
+      <div class="flex items-center justify-between gap-3">
+        <div class="relative flex-1">
+          <span class="material-symbols-outlined text-[16px] text-secondary absolute left-3 top-2.5">search</span>
+          <input type="text" id="admLeadsFilterInput" placeholder="Filter harvested businesses by name, category, phone, or email..." oninput="filterHarvestedLeadsTable(this.value)" class="w-full pl-8 pr-3 py-1.5 rounded-lg bg-surface-container text-xs text-on-surface border border-surface-container-high focus:outline-none focus:ring-1 focus:ring-primary" />
+        </div>
+        <span class="text-[11px] text-secondary font-mono">Job: <code id="admLeadsJobId" class="text-primary font-bold">--</code></span>
+      </div>
+
+      <!-- Leads Table -->
+      <div class="border border-surface-container-high/40 rounded-xl overflow-hidden bg-surface-container-low shadow-2xs">
+        <div class="overflow-x-auto max-h-[58vh]">
+          <table class="w-full text-left text-xs font-body">
+            <thead class="bg-surface-container font-label uppercase text-[10px] tracking-wider text-secondary border-b border-surface-container-high sticky top-0 z-10 backdrop-blur-xs">
+              <tr>
+                <th class="px-3.5 py-2.5">Business Name</th>
+                <th class="px-3.5 py-2.5">Category</th>
+                <th class="px-3.5 py-2.5">Phone</th>
+                <th class="px-3.5 py-2.5">Email</th>
+                <th class="px-3.5 py-2.5">Website / Social</th>
+                <th class="px-3.5 py-2.5">Rating</th>
+                <th class="px-3.5 py-2.5">Address</th>
+              </tr>
+            </thead>
+            <tbody id="admLeadsTableBody" class="divide-y divide-surface-container-high/30">
+              <tr><td colspan="7" class="px-3.5 py-6 text-center text-secondary">Loading harvested leads...</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+
     </div>
   </div>
 

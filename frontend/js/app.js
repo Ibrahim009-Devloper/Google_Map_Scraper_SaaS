@@ -57,6 +57,23 @@ const hubClusterText = document.getElementById("hubClusterText");
 const mapSubText = document.getElementById("mapSubText");
 const dedupCount = document.getElementById("dedupCount");
 
+// Radar Hub DOM Elements
+const radarStatusDot = document.getElementById("radarStatusDot");
+const radarStatusLabel = document.getElementById("radarStatusLabel");
+const radarTimerBadge = document.getElementById("radarTimerBadge");
+const radarTimerIcon = document.getElementById("radarTimerIcon");
+const hubDurationDisplay = document.getElementById("hubDurationDisplay");
+const radarPingWave1 = document.getElementById("radarPingWave1");
+const radarPingWave2 = document.getElementById("radarPingWave2");
+const radarBeamContainer = document.getElementById("radarBeamContainer");
+const radarCenterIconBox = document.getElementById("radarCenterIconBox");
+const radarCenterIcon = document.getElementById("radarCenterIcon");
+const radarActionText = document.getElementById("radarActionText");
+const hubClusterDot = document.getElementById("hubClusterDot");
+const hubClusterLabel = document.getElementById("hubClusterLabel");
+const hubZoneLeads = document.getElementById("hubZoneLeads");
+const hubQualityStatus = document.getElementById("hubQualityStatus");
+
 // Header DOM
 const serverHealthText = document.getElementById("serverHealthText");
 const quotaText = document.getElementById("quotaText");
@@ -527,6 +544,203 @@ async function loadLiveProblemFeed() {
 
 
 // ============================================================================
+// Real-Time Stopwatch Timer & Animated Radar Controller
+// ============================================================================
+
+let scraperTimerInterval = null;
+let scraperStartTime = null;
+
+function formatElapsedTimer(seconds) {
+  const mins = Math.floor(seconds / 60);
+  const secs = Math.floor(seconds % 60);
+  return `${String(mins).padStart(2, "0")}:${String(secs).padStart(2, "0")}`;
+}
+
+function startScraperTimer() {
+  if (scraperTimerInterval) {
+    clearInterval(scraperTimerInterval);
+  }
+  scraperStartTime = Date.now();
+  if (hubDurationDisplay) hubDurationDisplay.innerText = "00:00";
+  if (radarTimerBadge) {
+    radarTimerBadge.className = "flex items-center gap-1.5 px-3 py-1 rounded-full bg-emerald-50 border border-emerald-300 text-xs font-mono font-semibold text-emerald-800 shadow-xs";
+  }
+  if (radarTimerIcon) radarTimerIcon.className = "material-symbols-outlined text-[15px] text-emerald-600 animate-spin";
+
+  scraperTimerInterval = setInterval(() => {
+    if (!scraperStartTime) return;
+    const elapsedSec = Math.floor((Date.now() - scraperStartTime) / 1000);
+    if (hubDurationDisplay) hubDurationDisplay.innerText = formatElapsedTimer(elapsedSec);
+  }, 1000);
+}
+
+function stopScraperTimer(finalStatus = "completed", serverDuration = null) {
+  if (scraperTimerInterval) {
+    clearInterval(scraperTimerInterval);
+    scraperTimerInterval = null;
+  }
+  if (radarTimerIcon) radarTimerIcon.className = "material-symbols-outlined text-[15px] text-primary";
+  if (!hubDurationDisplay) return;
+
+  let totalSec = 0;
+  if (serverDuration && serverDuration > 0) {
+    totalSec = Math.round(serverDuration);
+  } else if (scraperStartTime) {
+    totalSec = Math.floor((Date.now() - scraperStartTime) / 1000);
+  }
+
+  const mins = Math.floor(totalSec / 60);
+  const secs = totalSec % 60;
+  const timeFormatted = mins > 0 ? `${mins}m ${secs}s` : `${secs}s`;
+
+  if (finalStatus === "completed") {
+    hubDurationDisplay.innerText = `${timeFormatted}`;
+    if (radarTimerBadge) {
+      radarTimerBadge.className = "flex items-center gap-1.5 px-3 py-1 rounded-full bg-emerald-100/70 border border-emerald-300 text-xs font-mono font-bold text-emerald-900 shadow-xs";
+    }
+  } else if (finalStatus === "stopped") {
+    hubDurationDisplay.innerText = `${timeFormatted} (Halted)`;
+    if (radarTimerBadge) {
+      radarTimerBadge.className = "flex items-center gap-1.5 px-3 py-1 rounded-full bg-amber-50 border border-amber-300 text-xs font-mono font-semibold text-amber-800 shadow-xs";
+    }
+  } else {
+    hubDurationDisplay.innerText = `${timeFormatted}`;
+  }
+}
+
+function formatFriendlyArea(areaRaw) {
+  if (!areaRaw) return { hubTitle: "Scanning...", currentArea: "Active Zone", action: "Scanning Google Maps..." };
+  const raw = areaRaw.trim();
+  
+  if (raw.includes(" in ")) {
+    const parts = raw.split(" in ");
+    const keyword = parts[0].replace(/['"]/g, "").trim();
+    const area = parts[1].replace(/['"]/g, "").trim();
+    return {
+      hubTitle: area,
+      currentArea: area,
+      action: `Scanning verified ${keyword} businesses in ${area}...`
+    };
+  }
+  if (raw.toLowerCase().includes("deep scraping")) {
+    const currentName = activeHubName ? activeHubName.innerText : "Active Zone";
+    return {
+      hubTitle: (currentName && currentName !== "Ready for AI Geo-Split") ? currentName : "Company Websites",
+      currentArea: "Deep Web Scanner",
+      action: "Extracting direct emails, socials & websites..."
+    };
+  }
+  if (raw.toLowerCase().includes("initializing")) {
+    return {
+      hubTitle: "AI Geo-Planner",
+      currentArea: "Analyzing Region",
+      action: "Splitting search area into optimized micro-zones..."
+    };
+  }
+  if (raw.toLowerCase().includes("done")) {
+    return {
+      hubTitle: "Harvest Finished",
+      currentArea: "Completed",
+      action: "All unique verified leads packed and ready."
+    };
+  }
+  return {
+    hubTitle: raw,
+    currentArea: raw,
+    action: `Live scanning ${raw}...`
+  };
+}
+
+function setRadarVisualState(state, info = {}) {
+  if (state === "running") {
+    if (radarStatusDot) radarStatusDot.className = "w-2 h-2 rounded-full bg-emerald-500 animate-pulse";
+    if (radarStatusLabel) {
+      radarStatusLabel.innerText = "Live Harvesting";
+      radarStatusLabel.className = "font-label text-xs uppercase tracking-wider text-emerald-600 font-semibold";
+    }
+    if (radarPingWave1) radarPingWave1.classList.remove("hidden");
+    if (radarPingWave2) radarPingWave2.classList.remove("hidden");
+    if (radarBeamContainer) radarBeamContainer.classList.remove("hidden");
+
+    if (radarCenterIconBox) radarCenterIconBox.className = "w-11 h-11 rounded-full bg-sky-950/90 border border-sky-400/80 flex items-center justify-center shadow-[0_0_18px_rgba(56,189,248,0.4)] transition-all animate-pulse";
+    if (radarCenterIcon) {
+      radarCenterIcon.innerText = "satellite_alt";
+      radarCenterIcon.className = "material-symbols-outlined text-[26px] text-sky-400";
+    }
+    if (mapSubText && info.subText) mapSubText.innerText = info.subText;
+    if (radarActionText) radarActionText.innerText = info.actionText || "Scanning Google Maps & extracting phone numbers...";
+
+    if (hubClusterDot) hubClusterDot.className = "w-1.5 h-1.5 rounded-full bg-emerald-400 animate-ping";
+    if (hubClusterLabel) hubClusterLabel.innerText = `Active (${allLeads.length})`;
+    if (hubZoneLeads) hubZoneLeads.innerText = `${allLeads.length} Found`;
+    if (hubQualityStatus) hubQualityStatus.innerText = "100% Unique & Verified";
+  } else if (state === "completed") {
+    if (radarStatusDot) radarStatusDot.className = "w-2 h-2 rounded-full bg-emerald-500";
+    if (radarStatusLabel) {
+      radarStatusLabel.innerText = "Harvest Finished";
+      radarStatusLabel.className = "font-label text-xs uppercase tracking-wider text-emerald-600 font-semibold";
+    }
+    if (radarPingWave1) radarPingWave1.classList.add("hidden");
+    if (radarPingWave2) radarPingWave2.classList.add("hidden");
+    if (radarBeamContainer) radarBeamContainer.classList.add("hidden");
+
+    if (radarCenterIconBox) radarCenterIconBox.className = "w-11 h-11 rounded-full bg-emerald-950/90 border border-emerald-400/80 flex items-center justify-center shadow-[0_0_18px_rgba(16,185,129,0.4)] transition-all";
+    if (radarCenterIcon) {
+      radarCenterIcon.innerText = "verified";
+      radarCenterIcon.className = "material-symbols-outlined text-[26px] text-emerald-400";
+    }
+    if (mapSubText) mapSubText.innerText = "Area Completed";
+    if (radarActionText) radarActionText.innerText = `Successfully harvested ${allLeads.length} verified leads!`;
+
+    if (hubClusterDot) hubClusterDot.className = "w-1.5 h-1.5 rounded-full bg-emerald-400";
+    if (hubClusterLabel) hubClusterLabel.innerText = `Harvested: ${allLeads.length}`;
+    if (hubZoneLeads) hubZoneLeads.innerText = `${allLeads.length} Leads`;
+    if (hubQualityStatus) hubQualityStatus.innerText = "Ready for Export (CSV/JSON)";
+  } else if (state === "stopped") {
+    if (radarStatusDot) radarStatusDot.className = "w-2 h-2 rounded-full bg-amber-500";
+    if (radarStatusLabel) {
+      radarStatusLabel.innerText = "Stopped Early";
+      radarStatusLabel.className = "font-label text-xs uppercase tracking-wider text-amber-600 font-semibold";
+    }
+    if (radarPingWave1) radarPingWave1.classList.add("hidden");
+    if (radarPingWave2) radarPingWave2.classList.add("hidden");
+    if (radarBeamContainer) radarBeamContainer.classList.add("hidden");
+
+    if (radarCenterIconBox) radarCenterIconBox.className = "w-11 h-11 rounded-full bg-amber-950/80 border border-amber-400/60 flex items-center justify-center shadow-md";
+    if (radarCenterIcon) {
+      radarCenterIcon.innerText = "pause_circle";
+      radarCenterIcon.className = "material-symbols-outlined text-[26px] text-amber-400";
+    }
+    if (mapSubText) mapSubText.innerText = "Scraper Paused";
+    if (radarActionText) radarActionText.innerText = `Preserved ${allLeads.length} leads in local cache.`;
+    if (hubClusterDot) hubClusterDot.className = "w-1.5 h-1.5 rounded-full bg-amber-400";
+    if (hubClusterLabel) hubClusterLabel.innerText = `Preserved: ${allLeads.length}`;
+    if (hubZoneLeads) hubZoneLeads.innerText = `${allLeads.length} Leads`;
+  } else {
+    if (radarStatusDot) radarStatusDot.className = "w-2 h-2 rounded-full bg-secondary";
+    if (radarStatusLabel) {
+      radarStatusLabel.innerText = "Active Scraping Hub";
+      radarStatusLabel.className = "font-label text-xs uppercase tracking-wider text-secondary font-semibold";
+    }
+    if (radarPingWave1) radarPingWave1.classList.add("hidden");
+    if (radarPingWave2) radarPingWave2.classList.add("hidden");
+    if (radarBeamContainer) radarBeamContainer.classList.add("hidden");
+
+    if (radarCenterIconBox) radarCenterIconBox.className = "w-11 h-11 rounded-full bg-slate-800/90 border border-sky-400/40 flex items-center justify-center shadow-lg transition-all";
+    if (radarCenterIcon) {
+      radarCenterIcon.innerText = "radar";
+      radarCenterIcon.className = "material-symbols-outlined text-[26px] text-sky-400";
+    }
+    if (mapSubText) mapSubText.innerText = "Hierarchical Geo-Coordinates";
+    if (radarActionText) radarActionText.innerText = "Ready to start autonomous harvest";
+    if (hubClusterDot) hubClusterDot.className = "w-1.5 h-1.5 rounded-full bg-sky-400 animate-pulse";
+    if (hubClusterLabel) hubClusterLabel.innerText = "Cluster: Ready";
+    if (hubZoneLeads) hubZoneLeads.innerText = "0 Leads";
+    if (hubQualityStatus) hubQualityStatus.innerText = "100% Unique & Verified";
+  }
+}
+
+// ============================================================================
 // Scraping Job Execution & SSE Live Stream
 // ============================================================================
 
@@ -658,10 +872,14 @@ function initSSEStream(jobId, targetQuota) {
         return;
       }
 
-      // Update Current Area & Geographic Hub
+      // Update Current Area & Live Harvesting Radar
       if (data.current_area) {
-        hubCurrentArea.innerText = data.current_area;
-        activeHubName.innerText = data.current_area.split(" in ").pop() || data.current_area;
+        const friendly = formatFriendlyArea(data.current_area);
+        if (hubCurrentArea) hubCurrentArea.innerText = friendly.currentArea;
+        if (activeHubName) activeHubName.innerText = friendly.hubTitle;
+        if (mapSubText) mapSubText.innerText = `${friendly.hubTitle} Zone`;
+        const radarActionTextEl = document.getElementById("radarActionText");
+        if (radarActionTextEl) radarActionTextEl.innerText = friendly.action;
       }
 
       // Ingest New Leads Batch or Final Enriched Leads
@@ -673,6 +891,8 @@ function initSSEStream(jobId, targetQuota) {
         updateMetricCards(targetQuota);
         const emailCount = allLeads.filter(l => l.emails && l.emails.length > 0).length;
         appendTerminalLog(`[ENRICH/SYNC] Final synchronized leads loaded. ${emailCount} leads verified with direct emails.`);
+        const hubZoneLeadsEl = document.getElementById("hubZoneLeads");
+        if (hubZoneLeadsEl) hubZoneLeadsEl.innerText = `${allLeads.length} Leads`;
       } else if (Array.isArray(data.new_leads) && data.new_leads.length > 0) {
         let addedCount = 0;
         let updatedCount = 0;
@@ -695,16 +915,24 @@ function initSSEStream(jobId, targetQuota) {
           scheduleLeadsFeedRender();
           updateMetricCards(targetQuota);
 
+          const hubZoneLeadsEl = document.getElementById("hubZoneLeads");
+          if (hubZoneLeadsEl) hubZoneLeadsEl.innerText = `${allLeads.length} Leads`;
+          const hubClusterLabelEl = document.getElementById("hubClusterLabel");
+          if (hubClusterLabelEl) hubClusterLabelEl.innerText = `Active (${allLeads.length})`;
+
           const latest = data.new_leads[0];
-          if (addedCount > 0) {
+          if (addedCount > 0 && latest) {
             appendTerminalLog(`[API/INGEST] Ingested +${addedCount} candidate leads. Latest: "${latest.name}" (${latest.neighborhood || latest.address || 'Address verified'})`);
+            const radarActionTextEl = document.getElementById("radarActionText");
+            if (radarActionTextEl) {
+              radarActionTextEl.innerText = `Verified: "${latest.name}"`;
+            }
           }
 
           // Update geo coordinates on map if available
-          if (latest.lat && latest.lon) {
-            hubCoordsText.innerText = `Lat: ${latest.lat.toFixed(4)}, Lon: ${latest.lon.toFixed(4)}`;
-            hubClusterText.innerText = `Cluster: Active (${allLeads.length})`;
-            mapSubText.innerText = `${latest.neighborhood || 'Current Zone'} Coordinates`;
+          if (latest && latest.lat && latest.lon) {
+            hubCoordsText.innerText = `Live Zone: ${latest.neighborhood || 'Target'}`;
+            if (mapSubText) mapSubText.innerText = `${latest.neighborhood || 'Current Zone'} Scanner`;
           }
         }
       }
@@ -782,11 +1010,22 @@ function setScrapingState(running, statusLabel = "idle") {
     statusPulse.className = "animate-ping absolute inline-flex h-full w-full rounded-full bg-primary opacity-75";
     statusText.className = "font-label text-xs font-semibold uppercase tracking-wider text-primary";
     statusText.innerText = "Running Engine";
+
+    // Activate Real-Time Stopwatch & Animated Radar
+    startScraperTimer();
+    setRadarVisualState("running", {
+      subText: "Scanning Live Zone",
+      actionText: "AI Geo-Planner analyzing and discovering businesses..."
+    });
   } else {
     startBtn.disabled = false;
     startBtn.classList.remove("opacity-50", "cursor-not-allowed");
     stopBtn.classList.add("hidden");
     stopBtn.classList.remove("flex");
+
+    // Stop Stopwatch & Update Radar Visual
+    stopScraperTimer(statusLabel);
+    setRadarVisualState(statusLabel);
 
     let dotColor = "bg-secondary";
     let textColor = "text-secondary";
@@ -1252,11 +1491,38 @@ async function initSupabaseClient() {
   }
 }
 
+async function getValidAuthToken() {
+  if (supabaseClient && supabaseClient.auth) {
+    try {
+      const { data } = await supabaseClient.auth.getSession();
+      if (data && data.session && data.session.access_token) {
+        authToken = data.session.access_token;
+        localStorage.setItem("gmaps_auth_token", authToken);
+        if (data.session.user) currentUser = data.session.user;
+        return authToken;
+      }
+    } catch (e) {
+      console.warn("[Auth] Error refreshing session via Supabase Client:", e);
+    }
+  }
+  const token = authToken || localStorage.getItem("gmaps_auth_token");
+  if (token && token !== "null" && token !== "undefined" && String(token).trim().length > 10) {
+    authToken = String(token).trim();
+    return authToken;
+  }
+  return null;
+}
+
 async function fetchUserProfile() {
-  if (!authToken) return null;
+  const token = await getValidAuthToken();
+  if (!token) {
+    currentUserProfile = null;
+    updateAuthUI();
+    return null;
+  }
   try {
     const res = await fetch("/api/user/me", {
-      headers: { "Authorization": `Bearer ${authToken}` }
+      headers: { "Authorization": `Bearer ${token}` }
     });
     if (res.ok) {
       currentUserProfile = await res.json();
@@ -1655,6 +1921,18 @@ async function loadUserJobHistory() {
 }
 
 async function openAdminDashboardModal() {
+  const token = await getValidAuthToken();
+  if (!token) {
+    showToast("Please sign in with your Administrator account.", "error");
+    openAuthModal();
+    return;
+  }
+
+  // Refresh profile if not loaded
+  if (!currentUserProfile) {
+    await fetchUserProfile();
+  }
+
   if (!currentUserProfile || !currentUserProfile.is_admin) {
     showToast("Access restricted: Administrator authorization required.", "error");
     return;
@@ -1665,7 +1943,7 @@ async function openAdminDashboardModal() {
 
   try {
     const res = await fetch("/api/admin/overview", {
-      headers: { "Authorization": `Bearer ${authToken}` }
+      headers: { "Authorization": `Bearer ${token}` }
     });
     if (res.ok) {
       const ov = await res.json();
@@ -1673,6 +1951,11 @@ async function openAdminDashboardModal() {
       document.getElementById("admJobsToday").innerText = ov.active_jobs_today;
       document.getElementById("admTotalLeads").innerText = ov.total_leads_scraped.toLocaleString();
       document.getElementById("admRevenue").innerText = `${ov.total_revenue_bdt.toLocaleString()} BDT`;
+    } else if (res.status === 401 || res.status === 403) {
+      showToast("Administrator session expired or unauthorized. Please re-login.", "error");
+      closeAdminDashboardModal();
+      openAuthModal();
+      return;
     }
   } catch (err) {
     console.error("Admin overview fetch error:", err);
@@ -1696,8 +1979,8 @@ function switchAdminTab(tab) {
   const paymentsView = document.getElementById("admPaymentsView");
   const reviewsView = document.getElementById("admReviewsView");
 
-  const inactiveBtn = "flex-1 py-1.5 rounded-md font-semibold text-secondary hover:text-on-surface transition-all";
-  const activeBtn = "flex-1 py-1.5 rounded-md font-semibold text-primary bg-surface-container-lowest shadow-sm transition-all";
+  const inactiveBtn = "flex-1 py-1.5 rounded-md font-semibold text-secondary hover:text-on-surface transition-all flex items-center justify-center gap-1.5";
+  const activeBtn = "flex-1 py-1.5 rounded-md font-semibold text-primary bg-surface-container-lowest shadow-sm transition-all flex items-center justify-center gap-1.5";
 
   if (tabUsers) tabUsers.className = tab === "users" ? activeBtn : inactiveBtn;
   if (tabJobs) tabJobs.className = tab === "jobs" ? activeBtn : inactiveBtn;
@@ -1725,9 +2008,15 @@ async function loadAdminUsers() {
   if (!tbody) return;
   tbody.innerHTML = `<tr><td colspan="5" class="px-3.5 py-4 text-center text-secondary">Loading registered users...</td></tr>`;
 
+  const token = await getValidAuthToken();
+  if (!token) {
+    tbody.innerHTML = `<tr><td colspan="5" class="px-3.5 py-4 text-center text-error">Please sign in as Administrator.</td></tr>`;
+    return;
+  }
+
   try {
     const res = await fetch("/api/admin/users", {
-      headers: { "Authorization": `Bearer ${authToken}` }
+      headers: { "Authorization": `Bearer ${token}` }
     });
     if (res.ok) {
       const data = await res.json();
@@ -1775,6 +2064,8 @@ async function loadAdminUsers() {
           </tr>
         `;
       }).join("");
+    } else if (res.status === 401 || res.status === 403) {
+      tbody.innerHTML = `<tr><td colspan="5" class="px-3.5 py-4 text-center text-error">Access restricted: Administrator role required.</td></tr>`;
     }
   } catch (err) {
     tbody.innerHTML = `<tr><td colspan="5" class="px-3.5 py-4 text-center text-error">${escapeHtml(err.message)}</td></tr>`;
@@ -1782,12 +2073,17 @@ async function loadAdminUsers() {
 }
 
 async function changeUserPlan(userId, newPlan) {
+  const token = await getValidAuthToken();
+  if (!token) {
+    showToast("Please sign in as Administrator.", "error");
+    return;
+  }
   try {
     const res = await fetch(`/api/admin/users/${userId}`, {
       method: "PATCH",
       headers: {
         "Content-Type": "application/json",
-        "Authorization": `Bearer ${authToken}`
+        "Authorization": `Bearer ${token}`
       },
       body: JSON.stringify({ plan_id: newPlan })
     });
@@ -1804,12 +2100,17 @@ async function changeUserPlan(userId, newPlan) {
 }
 
 async function changeUserRole(userId, newRole) {
+  const token = await getValidAuthToken();
+  if (!token) {
+    showToast("Please sign in as Administrator.", "error");
+    return;
+  }
   try {
     const res = await fetch(`/api/admin/users/${userId}`, {
       method: "PATCH",
       headers: {
         "Content-Type": "application/json",
-        "Authorization": `Bearer ${authToken}`
+        "Authorization": `Bearer ${token}`
       },
       body: JSON.stringify({ role: newRole })
     });
@@ -1853,6 +2154,12 @@ async function handleSaveCustomQuota(event) {
     return;
   }
 
+  const token = await getValidAuthToken();
+  if (!token) {
+    showToast("Please sign in as Administrator.", "error");
+    return;
+  }
+
   if (submitBtn) {
     submitBtn.disabled = true;
     submitBtn.innerHTML = `<span class="animate-spin material-symbols-outlined text-[16px]">sync</span> Saving...`;
@@ -1863,7 +2170,7 @@ async function handleSaveCustomQuota(event) {
       method: "PATCH",
       headers: {
         "Content-Type": "application/json",
-        "Authorization": `Bearer ${authToken}`
+        "Authorization": `Bearer ${token}`
       },
       body: JSON.stringify({
         custom_leads_per_day: leads,
@@ -1900,12 +2207,19 @@ async function resetUserCustomQuota() {
   if (!confirm("Are you sure you want to remove the custom quota and reset this user to the standard plan default?")) {
     return;
   }
+
+  const token = await getValidAuthToken();
+  if (!token) {
+    showToast("Please sign in as Administrator.", "error");
+    return;
+  }
+
   try {
     const res = await fetch(`/api/admin/users/${userId}`, {
       method: "PATCH",
       headers: {
         "Content-Type": "application/json",
-        "Authorization": `Bearer ${authToken}`
+        "Authorization": `Bearer ${token}`
       },
       body: JSON.stringify({
         custom_leads_per_day: 0
@@ -1927,46 +2241,608 @@ async function resetUserCustomQuota() {
   }
 }
 
+// ============================================================================
+// Admin CRM, Job Debugging & Diagnostic Log Inspector
+// ============================================================================
+
+let adminJobsCache = [];
+let adminCrmFilter = "all";
+let adminCrmSearch = "";
+let activeJobLogsCache = [];
+let activeLogFilter = "all";
+let activeLeadsCache = [];
+let activeJobDiagnostics = null;
+
+function formatCrmDuration(sec) {
+  const s = Math.max(0, parseFloat(sec) || 0);
+  if (s < 1) return "< 1s";
+  if (s < 60) return `${Math.round(s)}s`;
+  const m = Math.floor(s / 60);
+  const remSec = Math.round(s % 60);
+  if (s < 3600) return `${m}m ${remSec}s`;
+  const h = Math.floor(s / 3600);
+  const remMin = Math.floor((s % 3600) / 60);
+  return `${h}h ${remMin}m`;
+}
+
+function formatCrmTime(isoStr) {
+  if (!isoStr) return "--";
+  try {
+    const d = new Date(isoStr);
+    return d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+  } catch {
+    return isoStr;
+  }
+}
+
 async function loadAdminJobs() {
   const tbody = document.getElementById("admJobsTableBody");
   if (!tbody) return;
-  tbody.innerHTML = `<tr><td colspan="6" class="px-3.5 py-4 text-center text-secondary">Loading platform jobs...</td></tr>`;
+  tbody.innerHTML = `<tr><td colspan="7" class="px-3.5 py-6 text-center text-secondary">Loading CRM searches and scraper activity...</td></tr>`;
+
+  const token = await getValidAuthToken();
+  if (!token) {
+    tbody.innerHTML = `<tr><td colspan="7" class="px-3.5 py-6 text-center text-error">Please sign in as Administrator.</td></tr>`;
+    return;
+  }
 
   try {
-    const res = await fetch("/api/admin/jobs", {
-      headers: { "Authorization": `Bearer ${authToken}` }
+    // 1. Fetch CRM Overview Metrics
+    try {
+      const metricRes = await fetch("/api/admin/crm/metrics", {
+        headers: { "Authorization": `Bearer ${token}` }
+      });
+      if (metricRes.ok) {
+        const m = await metricRes.json();
+        const totalElem = document.getElementById("crmTotalSearches");
+        const userElem = document.getElementById("crmUserSearches");
+        const guestElem = document.getElementById("crmGuestSearches");
+        const failedElem = document.getElementById("crmFailedSearches");
+        const runningElem = document.getElementById("crmRunningSearches");
+        const durElem = document.getElementById("crmAvgDuration");
+        const leadsElem = document.getElementById("crmTotalLeads");
+        const badgeElem = document.getElementById("crmErrorBadge");
+
+        if (totalElem) totalElem.innerText = m.total_searches || 0;
+        if (userElem) userElem.innerText = m.user_searches || 0;
+        if (guestElem) guestElem.innerText = m.guest_searches || 0;
+        if (failedElem) failedElem.innerText = m.failed_searches || 0;
+        if (runningElem) runningElem.innerText = m.active_jobs || 0;
+        if (durElem) durElem.innerText = formatCrmDuration(m.avg_duration_seconds || 0);
+        if (leadsElem) leadsElem.innerText = (m.total_harvested_leads || 0).toLocaleString();
+
+        if (badgeElem) {
+          if (m.failed_searches > 0) {
+            badgeElem.innerText = `${m.failed_searches} ${m.failed_searches === 1 ? 'Error' : 'Errors'}`;
+            badgeElem.classList.remove("hidden");
+          } else {
+            badgeElem.classList.add("hidden");
+          }
+        }
+      }
+    } catch (metricErr) {
+      console.warn("CRM metrics error:", metricErr);
+    }
+
+    // 2. Fetch Jobs List
+    const res = await fetch("/api/admin/jobs?limit=100", {
+      headers: { "Authorization": `Bearer ${token}` }
     });
     if (res.ok) {
       const data = await res.json();
-      const jobs = Array.isArray(data) ? data : (data.jobs || []);
-      if (!jobs || jobs.length === 0) {
-        tbody.innerHTML = `<tr><td colspan="6" class="px-3.5 py-4 text-center text-secondary">No platform jobs found.</td></tr>`;
-        return;
-      }
-
-      tbody.innerHTML = jobs.map(j => {
-        let statusBadge = `<span class="px-2 py-0.5 rounded text-[10px] font-semibold bg-emerald-100 text-emerald-800">${j.status.toUpperCase()}</span>`;
-        if (j.status === "failed") {
-          statusBadge = `<span class="px-2 py-0.5 rounded text-[10px] font-semibold bg-red-100 text-red-800">FAILED</span>`;
-        } else if (j.status === "running") {
-          statusBadge = `<span class="px-2 py-0.5 rounded text-[10px] font-semibold bg-primary-fixed text-primary">RUNNING</span>`;
-        }
-
-        return `
-          <tr class="hover:bg-surface-container/60 transition-colors">
-            <td class="px-3.5 py-2.5 font-mono text-[10px] text-secondary">${j.job_id.slice(0, 8)}...</td>
-            <td class="px-3.5 py-2.5 text-secondary truncate max-w-[120px]">${escapeHtml(j.user_email || 'Anonymous')}</td>
-            <td class="px-3.5 py-2.5 text-on-surface truncate max-w-[180px]" title="${escapeHtml(j.prompt)}">${escapeHtml(j.prompt)}</td>
-            <td class="px-3.5 py-2.5">${statusBadge}</td>
-            <td class="px-3.5 py-2.5 font-mono text-xs">${j.leads_scraped} / ${j.target_leads}</td>
-            <td class="px-3.5 py-2.5 text-error text-[11px] truncate max-w-[150px]">${escapeHtml(j.error_message || 'None')}</td>
-          </tr>
-        `;
-      }).join("");
+      adminJobsCache = Array.isArray(data) ? data : (data.jobs || []);
+      renderAdminJobsTable();
+    } else {
+      const err = await res.json();
+      tbody.innerHTML = `<tr><td colspan="7" class="px-3.5 py-6 text-center text-error">Failed to load platform jobs: ${escapeHtml(err.detail || 'Authorization failed')}</td></tr>`;
     }
   } catch (err) {
-    tbody.innerHTML = `<tr><td colspan="6" class="px-3.5 py-4 text-center text-error">${escapeHtml(err.message)}</td></tr>`;
+    tbody.innerHTML = `<tr><td colspan="7" class="px-3.5 py-6 text-center text-error">${escapeHtml(err.message)}</td></tr>`;
   }
+}
+
+function renderAdminJobsTable() {
+  const tbody = document.getElementById("admJobsTableBody");
+  if (!tbody) return;
+
+  let filtered = adminJobsCache.slice();
+
+  // Filter by status or user type tab
+  if (adminCrmFilter === "failed") {
+    filtered = filtered.filter(j => j.has_error || j.status === "failed");
+  } else if (adminCrmFilter === "running") {
+    filtered = filtered.filter(j => j.status === "running");
+  } else if (adminCrmFilter === "completed") {
+    filtered = filtered.filter(j => j.status === "completed");
+  } else if (adminCrmFilter === "stopped") {
+    filtered = filtered.filter(j => j.status === "stopped");
+  } else if (adminCrmFilter === "guest") {
+    filtered = filtered.filter(j => !j.is_authenticated || j.user_role === "guest");
+  } else if (adminCrmFilter === "user") {
+    filtered = filtered.filter(j => j.is_authenticated && j.user_role !== "guest");
+  }
+
+  // Filter by search query
+  if (adminCrmSearch) {
+    const q = adminCrmSearch.toLowerCase();
+    filtered = filtered.filter(j => 
+      (j.user_email || "").toLowerCase().includes(q) ||
+      (j.user_name || "").toLowerCase().includes(q) ||
+      (j.prompt || "").toLowerCase().includes(q) ||
+      (j.job_id || "").toLowerCase().includes(q)
+    );
+  }
+
+  if (filtered.length === 0) {
+    tbody.innerHTML = `
+      <tr>
+        <td colspan="7" class="px-3.5 py-8 text-center text-secondary">
+          <div class="flex flex-col items-center justify-center gap-1.5">
+            <span class="material-symbols-outlined text-[28px] text-secondary">search_off</span>
+            <span class="font-medium">No matching searches found.</span>
+            <span class="text-[11px] text-secondary">Try adjusting your filter or search query.</span>
+          </div>
+        </td>
+      </tr>
+    `;
+    return;
+  }
+
+  tbody.innerHTML = filtered.map(j => {
+    // User / Role presentation
+    const isGuest = !j.is_authenticated || (j.user_role === "guest");
+    const roleBadge = isGuest
+      ? `<span class="px-1.5 py-0.2 rounded text-[9px] font-bold uppercase bg-amber-50 text-amber-800 border border-amber-200">Guest</span>`
+      : (j.user_role === "admin"
+          ? `<span class="px-1.5 py-0.2 rounded text-[9px] font-bold uppercase bg-amber-100 text-amber-800 border border-amber-300">Admin</span>`
+          : `<span class="px-1.5 py-0.2 rounded text-[9px] font-bold uppercase bg-purple-100 text-purple-800 border border-purple-200">User</span>`
+        );
+
+    const userInitial = (j.user_name || j.user_email || "U")[0].toUpperCase();
+    const timeStr = formatCrmTime(j.created_at);
+
+    // Duration formatting
+    const durationFormatted = formatCrmDuration(j.duration_seconds || 0);
+
+    // Status Badge
+    let statusBadge = "";
+    if (j.status === "completed") {
+      statusBadge = `<span class="px-2 py-0.5 rounded-full text-[10px] font-bold bg-emerald-100 text-emerald-800 flex items-center gap-1 w-max"><span class="w-1.5 h-1.5 rounded-full bg-emerald-600"></span>COMPLETED</span>`;
+    } else if (j.status === "failed") {
+      statusBadge = `<span class="px-2 py-0.5 rounded-full text-[10px] font-bold bg-red-100 text-red-800 flex items-center gap-1 w-max animate-pulse"><span class="w-1.5 h-1.5 rounded-full bg-red-600"></span>FAILED</span>`;
+    } else if (j.status === "running") {
+      statusBadge = `<span class="px-2 py-0.5 rounded-full text-[10px] font-bold bg-blue-100 text-blue-800 flex items-center gap-1 w-max"><span class="w-1.5 h-1.5 rounded-full bg-blue-600 animate-pulse"></span>RUNNING</span>`;
+    } else if (j.status === "blocked_limit") {
+      statusBadge = `<span class="px-2 py-0.5 rounded-full text-[10px] font-bold bg-amber-100 text-amber-900 border border-amber-300 flex items-center gap-1 w-max"><span class="w-1.5 h-1.5 rounded-full bg-amber-600"></span>LIMIT BLOCKED</span>`;
+    } else if (j.status === "limit_reached") {
+      statusBadge = `<span class="px-2 py-0.5 rounded-full text-[10px] font-bold bg-amber-100 text-amber-900 flex items-center gap-1 w-max">LIMIT REACHED</span>`;
+    } else {
+      statusBadge = `<span class="px-2 py-0.5 rounded-full text-[10px] font-bold bg-slate-100 text-slate-700 flex items-center gap-1 w-max">${(j.status || "UNKNOWN").toUpperCase()}</span>`;
+    }
+
+    // Leads Progress
+    const harvested = parseInt(j.leads_scraped) || 0;
+    const target = parseInt(j.target_leads) || 100;
+    const pct = Math.min(100, Math.round((harvested / target) * 100));
+
+    // Error column presentation
+    let errorCol = "";
+    if (j.has_error || j.error_message) {
+      const errClean = j.error_message || "Execution Error encountered during search";
+      errorCol = `
+        <div class="flex items-center gap-1 max-w-[170px]" title="${escapeHtml(errClean)}">
+          <span class="material-symbols-outlined text-[14px] text-red-600 shrink-0">error</span>
+          <span class="text-[11px] font-mono text-red-700 truncate cursor-help">${escapeHtml(errClean)}</span>
+        </div>
+      `;
+    } else {
+      errorCol = `
+        <span class="inline-flex items-center gap-1 text-[11px] text-emerald-700 font-medium">
+          <span class="material-symbols-outlined text-[14px]">check_circle</span> Clean Run
+        </span>
+      `;
+    }
+
+    return `
+      <tr class="hover:bg-surface-container/70 transition-colors ${j.has_error ? 'bg-red-50/20' : ''}">
+        <!-- Col 1: User / Requester -->
+        <td class="px-3.5 py-3">
+          <div class="flex items-center gap-2">
+            <div class="w-7 h-7 rounded-full bg-surface-container-highest text-primary font-bold text-[11px] flex items-center justify-center shrink-0">
+              ${escapeHtml(userInitial)}
+            </div>
+            <div class="flex flex-col min-w-0">
+              <span class="font-semibold text-xs text-on-surface truncate max-w-[130px]" title="${escapeHtml(j.user_email || '')}">${escapeHtml(j.user_email || 'Guest')}</span>
+              <div class="flex items-center gap-1.5 mt-0.5">
+                ${roleBadge}
+                <span class="text-[10px] text-secondary font-mono">${timeStr}</span>
+              </div>
+            </div>
+          </div>
+        </td>
+
+        <!-- Col 2: Search Query & Params -->
+        <td class="px-3.5 py-3">
+          <div class="flex flex-col gap-1 max-w-[220px]">
+            <div class="flex items-center justify-between gap-1">
+              <span class="font-medium text-xs text-on-surface truncate" title="${escapeHtml(j.prompt)}">${escapeHtml(j.prompt)}</span>
+              <button type="button" class="text-secondary hover:text-primary transition-colors p-0.5 shrink-0" title="Copy prompt" onclick="navigator.clipboard.writeText('${escapeHtml(j.prompt)}'); showToast('Prompt copied!', 'success');">
+                <span class="material-symbols-outlined text-[13px]">content_copy</span>
+              </button>
+            </div>
+            <div class="flex items-center gap-1.5 flex-wrap">
+              <span class="px-1.5 py-0.2 rounded text-[9px] font-mono bg-surface-container text-secondary">Target: ${target}</span>
+              ${j.scrape_website ? '<span class="px-1.5 py-0.2 rounded text-[9px] font-semibold bg-emerald-50 text-emerald-800 border border-emerald-200">Web Deep Scraper</span>' : '<span class="px-1.5 py-0.2 rounded text-[9px] text-secondary bg-surface-container">Maps Fast</span>'}
+            </div>
+          </div>
+        </td>
+
+        <!-- Col 3: Duration & Timing -->
+        <td class="px-3.5 py-3 whitespace-nowrap">
+          <div class="flex flex-col gap-0.5">
+            <span class="font-mono font-bold text-xs ${j.status === 'running' ? 'text-primary' : 'text-on-surface'} flex items-center gap-1">
+              <span class="material-symbols-outlined text-[13px] text-secondary">timer</span>
+              ${durationFormatted}
+            </span>
+            <span class="text-[10px] text-secondary font-mono">${j.completed_at ? 'Done' : (j.status === 'blocked_limit' ? 'Blocked' : 'Active')}</span>
+          </div>
+        </td>
+
+        <!-- Col 4: Status Badge -->
+        <td class="px-3.5 py-3 whitespace-nowrap">
+          ${statusBadge}
+        </td>
+
+        <!-- Col 5: Leads Harvested Progress -->
+        <td class="px-3.5 py-3 whitespace-nowrap">
+          <div class="flex flex-col gap-1 min-w-[90px]">
+            <div class="flex items-center justify-between text-[11px] font-mono">
+              <span class="font-bold text-on-surface">${harvested}</span>
+              <span class="text-secondary">/ ${target}</span>
+            </div>
+            <div class="w-full bg-surface-container-high rounded-full h-1.5 overflow-hidden">
+              <div class="h-1.5 rounded-full ${j.status === 'failed' ? 'bg-red-500' : 'bg-primary'}" style="width: ${pct}%"></div>
+            </div>
+          </div>
+        </td>
+
+        <!-- Col 6: Error Note -->
+        <td class="px-3.5 py-3">
+          ${errorCol}
+        </td>
+
+        <!-- Col 7: Debugging & Inspection Actions -->
+        <td class="px-3.5 py-3 text-right whitespace-nowrap">
+          <div class="flex items-center justify-end gap-1">
+            <button type="button" class="px-2 py-1 rounded bg-slate-900 hover:bg-slate-800 text-slate-100 text-[11px] font-semibold flex items-center gap-1 transition-colors shadow-2xs" onclick="openAdminJobLogs('${j.job_id}')" title="Inspect terminal logs for this scraper run">
+              <span class="material-symbols-outlined text-[13px] text-primary-fixed">terminal</span>
+              <span>Logs</span>
+            </button>
+            <button type="button" class="px-2 py-1 rounded bg-surface-container hover:bg-surface-container-high text-secondary hover:text-on-surface text-[11px] font-semibold flex items-center gap-1 transition-colors" onclick="openAdminJobLeads('${j.job_id}')" title="Inspect harvested businesses">
+              <span class="material-symbols-outlined text-[13px]">dataset</span>
+              <span>Leads</span>
+            </button>
+            <button type="button" class="p-1 rounded text-secondary hover:text-on-surface hover:bg-surface-container transition-colors" onclick="copyJobDiagnostics('${j.job_id}')" title="Copy job diagnostics JSON">
+              <span class="material-symbols-outlined text-[15px]">share</span>
+            </button>
+          </div>
+        </td>
+      </tr>
+    `;
+  }).join("");
+}
+
+function filterAdminCrm(status) {
+  adminCrmFilter = status;
+
+  const btnAll = document.getElementById("crmTabFilterAll");
+  const btnUser = document.getElementById("crmTabFilterUser");
+  const btnGuest = document.getElementById("crmTabFilterGuest");
+  const btnErr = document.getElementById("crmTabFilterErrors");
+  const btnRun = document.getElementById("crmTabFilterRunning");
+  const btnDone = document.getElementById("crmTabFilterCompleted");
+
+  const activeCls = "px-2.5 py-1.5 rounded-lg font-semibold bg-surface-container-lowest text-primary shadow-xs";
+  const inactiveCls = "px-2.5 py-1.5 rounded-lg font-semibold text-secondary hover:text-on-surface transition-colors";
+  const userActiveCls = "px-2.5 py-1.5 rounded-lg font-semibold bg-purple-100 text-purple-900 shadow-xs flex items-center gap-1";
+  const userInactiveCls = "px-2.5 py-1.5 rounded-lg font-semibold text-secondary hover:text-purple-700 hover:bg-purple-50 transition-colors flex items-center gap-1";
+  const guestActiveCls = "px-2.5 py-1.5 rounded-lg font-semibold bg-amber-100 text-amber-900 shadow-xs flex items-center gap-1";
+  const guestInactiveCls = "px-2.5 py-1.5 rounded-lg font-semibold text-secondary hover:text-amber-700 hover:bg-amber-50 transition-colors flex items-center gap-1";
+  const errorActiveCls = "px-2.5 py-1.5 rounded-lg font-semibold bg-red-100 text-red-800 shadow-xs flex items-center gap-1";
+  const errorInactiveCls = "px-2.5 py-1.5 rounded-lg font-semibold text-secondary hover:text-red-700 hover:bg-red-50 flex items-center gap-1 transition-colors";
+
+  if (btnAll) btnAll.className = status === "all" ? activeCls : inactiveCls;
+  if (btnUser) btnUser.className = status === "user" ? userActiveCls : userInactiveCls;
+  if (btnGuest) btnGuest.className = status === "guest" ? guestActiveCls : guestInactiveCls;
+  if (btnErr) btnErr.className = status === "failed" ? errorActiveCls : errorInactiveCls;
+  if (btnRun) btnRun.className = status === "running" ? activeCls : inactiveCls;
+  if (btnDone) btnDone.className = status === "completed" ? activeCls : inactiveCls;
+
+  renderAdminJobsTable();
+}
+
+function handleCrmSearch(val) {
+  adminCrmSearch = (val || "").trim();
+  const clearBtn = document.getElementById("crmSearchClearBtn");
+  if (clearBtn) clearBtn.classList.toggle("hidden", !adminCrmSearch);
+  renderAdminJobsTable();
+}
+
+function clearCrmSearch() {
+  const input = document.getElementById("crmSearchInput");
+  if (input) input.value = "";
+  handleCrmSearch("");
+}
+
+// ----------------------------------------------------------------------------
+// Log Inspector Modal Logic
+// ----------------------------------------------------------------------------
+
+async function openAdminJobLogs(jobId) {
+  const modal = document.getElementById("adminLogModal");
+  if (!modal) return;
+  modal.classList.remove("hidden");
+
+  const logBody = document.getElementById("adminLogBody");
+  logBody.innerHTML = `<div class="text-slate-500 text-center py-8">Loading logs for job <code>${escapeHtml(jobId)}</code>...</div>`;
+
+  // Find job in cache
+  const job = adminJobsCache.find(j => j.job_id === jobId) || {};
+  document.getElementById("admLogJobId").innerText = jobId;
+  document.getElementById("admLogUser").innerText = job.user_email || "Guest";
+  document.getElementById("admLogDuration").innerText = formatCrmDuration(job.duration_seconds || 0);
+  document.getElementById("admLogPrompt").innerText = job.prompt || "--";
+
+  const statusBadge = document.getElementById("admLogStatusBadge");
+  if (statusBadge) {
+    statusBadge.innerText = (job.status || "RUNNING").toUpperCase();
+    statusBadge.className = `px-2 py-0.5 rounded text-[10px] font-bold uppercase ${
+      job.status === 'completed' ? 'bg-emerald-950 text-emerald-300 border border-emerald-800' :
+      job.status === 'failed' ? 'bg-red-950 text-red-300 border border-red-800' :
+      'bg-blue-950 text-blue-300 border border-blue-800'
+    }`;
+  }
+
+  activeJobDiagnostics = job;
+  activeJobLogsCache = [];
+  activeLogFilter = "all";
+
+  const token = await getValidAuthToken();
+  if (!token) {
+    logBody.innerHTML = `<div class="text-amber-400 py-6 text-center">Please sign in as Administrator to view job logs.</div>`;
+    return;
+  }
+
+  try {
+    const res = await fetch(`/api/admin/jobs/${jobId}/logs`, {
+      headers: { "Authorization": `Bearer ${token}` }
+    });
+    if (res.ok) {
+      const data = await res.json();
+      activeJobLogsCache = data.logs || [];
+      activeJobDiagnostics = { ...job, ...data.job_info, raw_logs: data.raw_text };
+
+      // Update counters
+      const allCount = activeJobLogsCache.length;
+      const errCount = activeJobLogsCache.filter(l => (l.level || '').toUpperCase() === 'ERROR').length;
+      const warnCount = activeJobLogsCache.filter(l => (l.level || '').toUpperCase() === 'WARN').length;
+
+      document.getElementById("logCountAll").innerText = allCount;
+      document.getElementById("logCountErrors").innerText = errCount;
+      document.getElementById("logCountWarn").innerText = warnCount;
+      document.getElementById("admLogTotalCount").innerText = allCount;
+
+      renderModalLogs();
+    } else {
+      logBody.innerHTML = `<div class="text-red-400 py-6 text-center">Failed to load logs from server.</div>`;
+    }
+  } catch (err) {
+    logBody.innerHTML = `<div class="text-red-400 py-6 text-center">${escapeHtml(err.message)}</div>`;
+  }
+}
+
+function renderModalLogs() {
+  const logBody = document.getElementById("adminLogBody");
+  if (!logBody) return;
+
+  const searchInput = document.getElementById("logSearchInput");
+  const query = (searchInput ? searchInput.value : "").toLowerCase().trim();
+
+  let logs = activeJobLogsCache.slice();
+
+  if (activeLogFilter === "error") {
+    logs = logs.filter(l => (l.level || '').toUpperCase() === 'ERROR');
+  } else if (activeLogFilter === "warn") {
+    logs = logs.filter(l => (l.level || '').toUpperCase() === 'WARN');
+  } else if (activeLogFilter === "info") {
+    logs = logs.filter(l => (l.level || '').toUpperCase() === 'INFO');
+  }
+
+  if (query) {
+    logs = logs.filter(l => (l.message || '').toLowerCase().includes(query));
+  }
+
+  if (logs.length === 0) {
+    logBody.innerHTML = `<div class="text-slate-500 text-center py-8">No matching log messages found.</div>`;
+    return;
+  }
+
+  logBody.innerHTML = logs.map(l => {
+    const lvl = (l.level || 'INFO').toUpperCase();
+    let badgeClass = "text-slate-400";
+    if (lvl === "ERROR") badgeClass = "text-red-400 font-bold";
+    else if (lvl === "WARN") badgeClass = "text-amber-400 font-bold";
+    else if (lvl === "SUCCESS") badgeClass = "text-emerald-400 font-bold";
+    else if (lvl === "PLAN") badgeClass = "text-cyan-400 font-bold";
+    else if (lvl === "CONFIG") badgeClass = "text-purple-400 font-bold";
+
+    const timeStr = formatCrmTime(l.timestamp);
+
+    return `
+      <div class="flex items-start gap-2 py-0.5 hover:bg-slate-800/40 px-1.5 rounded transition-colors">
+        <span class="text-slate-600 select-none shrink-0 font-mono text-[11px]">${timeStr}</span>
+        <span class="${badgeClass} select-none shrink-0 font-mono text-[11px]">[${lvl}]</span>
+        <span class="text-slate-200 break-words flex-1 font-mono text-[11px]">${escapeHtml(l.message || '')}</span>
+      </div>
+    `;
+  }).join("");
+
+  // Auto scroll to bottom
+  logBody.scrollTop = logBody.scrollHeight;
+}
+
+function setLogFilter(filter) {
+  activeLogFilter = filter;
+  ["All", "Errors", "Warn", "Info"].forEach(name => {
+    const btn = document.getElementById(`logFilter${name}`);
+    if (btn) {
+      if (filter.toLowerCase() === name.toLowerCase() || (filter === 'error' && name === 'Errors')) {
+        btn.className = "px-2.5 py-1 rounded-md text-[11px] font-semibold bg-slate-800 text-white";
+      } else {
+        btn.className = "px-2.5 py-1 rounded-md text-[11px] font-semibold bg-slate-900 text-slate-400 hover:bg-slate-800";
+      }
+    }
+  });
+  renderModalLogs();
+}
+
+function filterModalLogs(val) {
+  renderModalLogs();
+}
+
+function closeAdminLogModal() {
+  const modal = document.getElementById("adminLogModal");
+  if (modal) modal.classList.add("hidden");
+}
+
+function copyAdminLogs() {
+  if (!activeJobLogsCache || activeJobLogsCache.length === 0) {
+    showToast("No logs available to copy.", "info");
+    return;
+  }
+  const raw = activeJobLogsCache.map(l => `[${l.timestamp}] [${l.level}] ${l.message}`).join("\n");
+  navigator.clipboard.writeText(raw).then(() => {
+    showToast("All diagnostic logs copied to clipboard!", "success");
+  }).catch(() => {
+    showToast("Failed to copy logs to clipboard.", "error");
+  });
+}
+
+// ----------------------------------------------------------------------------
+// Leads Inspector Modal Logic
+// ----------------------------------------------------------------------------
+
+async function openAdminJobLeads(jobId) {
+  const modal = document.getElementById("adminLeadsModal");
+  if (!modal) return;
+  modal.classList.remove("hidden");
+
+  const tbody = document.getElementById("admLeadsTableBody");
+  tbody.innerHTML = `<tr><td colspan="7" class="px-3.5 py-6 text-center text-secondary">Loading harvested leads for job <code>${escapeHtml(jobId)}</code>...</td></tr>`;
+
+  document.getElementById("admLeadsJobId").innerText = jobId;
+  document.getElementById("admLeadsCountBadge").innerText = "Loading...";
+
+  const token = await getValidAuthToken();
+  if (!token) {
+    tbody.innerHTML = `<tr><td colspan="7" class="px-3.5 py-6 text-center text-error">Please sign in as Administrator to view job leads.</td></tr>`;
+    return;
+  }
+
+  try {
+    const res = await fetch(`/api/admin/jobs/${jobId}/leads`, {
+      headers: { "Authorization": `Bearer ${token}` }
+    });
+    if (res.ok) {
+      const data = await res.json();
+      activeLeadsCache = data.leads || [];
+      document.getElementById("admLeadsCountBadge").innerText = `${activeLeadsCache.length} Harvested Leads`;
+      renderHarvestedLeadsTable(activeLeadsCache);
+    } else {
+      tbody.innerHTML = `<tr><td colspan="7" class="px-3.5 py-6 text-center text-error">Failed to fetch leads for this job.</td></tr>`;
+    }
+  } catch (err) {
+    tbody.innerHTML = `<tr><td colspan="7" class="px-3.5 py-6 text-center text-error">${escapeHtml(err.message)}</td></tr>`;
+  }
+}
+
+function renderHarvestedLeadsTable(leads) {
+  const tbody = document.getElementById("admLeadsTableBody");
+  if (!tbody) return;
+
+  if (!leads || leads.length === 0) {
+    tbody.innerHTML = `<tr><td colspan="7" class="px-3.5 py-6 text-center text-secondary">No leads found for this search.</td></tr>`;
+    return;
+  }
+
+  tbody.innerHTML = leads.map(l => {
+    const emailStr = (l.emails && l.emails.length > 0)
+      ? `<span class="font-mono text-emerald-700 font-semibold">${escapeHtml(l.emails[0])}</span>`
+      : `<span class="text-secondary italic">None</span>`;
+
+    const websiteStr = l.website_url
+      ? `<a href="${escapeHtml(l.website_url)}" target="_blank" rel="noopener noreferrer" class="text-primary hover:underline truncate max-w-[140px] block">${escapeHtml(l.website_url.replace(/^https?:\/\//, ''))}</a>`
+      : `<span class="text-secondary italic">No Website</span>`;
+
+    return `
+      <tr class="hover:bg-surface-container/60 transition-colors">
+        <td class="px-3.5 py-2.5 font-semibold text-on-surface truncate max-w-[160px]">${escapeHtml(l.name || 'Unnamed')}</td>
+        <td class="px-3.5 py-2.5 text-secondary truncate max-w-[120px]">${escapeHtml(l.category || '--')}</td>
+        <td class="px-3.5 py-2.5 font-mono text-[11px] text-on-surface">${escapeHtml(l.phone || '--')}</td>
+        <td class="px-3.5 py-2.5 text-[11px]">${emailStr}</td>
+        <td class="px-3.5 py-2.5 text-[11px]">${websiteStr}</td>
+        <td class="px-3.5 py-2.5 font-mono text-[11px]">${l.rating ? `⭐ ${l.rating}` : '--'}</td>
+        <td class="px-3.5 py-2.5 text-secondary text-[11px] truncate max-w-[180px]" title="${escapeHtml(l.address || '')}">${escapeHtml(l.neighborhood || l.address || '--')}</td>
+      </tr>
+    `;
+  }).join("");
+}
+
+function filterHarvestedLeadsTable(val) {
+  const q = (val || "").toLowerCase().trim();
+  if (!q) {
+    renderHarvestedLeadsTable(activeLeadsCache);
+    return;
+  }
+  const filtered = activeLeadsCache.filter(l => 
+    (l.name || '').toLowerCase().includes(q) ||
+    (l.category || '').toLowerCase().includes(q) ||
+    (l.phone || '').toLowerCase().includes(q) ||
+    (l.emails && l.emails.some(e => e.toLowerCase().includes(q))) ||
+    (l.address || '').toLowerCase().includes(q)
+  );
+  renderHarvestedLeadsTable(filtered);
+}
+
+function closeAdminLeadsModal() {
+  const modal = document.getElementById("adminLeadsModal");
+  if (modal) modal.classList.add("hidden");
+}
+
+function copyJobDiagnostics(jobId) {
+  const job = adminJobsCache.find(j => j.job_id === jobId);
+  if (!job) {
+    showToast("Job details not found", "error");
+    return;
+  }
+  const payload = JSON.stringify({
+    job_id: job.job_id,
+    user: job.user_email,
+    prompt: job.prompt,
+    duration_seconds: job.duration_seconds,
+    duration_formatted: formatCrmDuration(job.duration_seconds || 0),
+    status: job.status,
+    has_error: job.has_error,
+    error_message: job.error_message,
+    leads_scraped: job.leads_scraped,
+    target_leads: job.target_leads,
+    created_at: job.created_at,
+    completed_at: job.completed_at,
+  }, null, 2);
+
+  navigator.clipboard.writeText(payload).then(() => {
+    showToast("Job diagnostics copied to clipboard!", "success");
+  });
 }
 
 async function loadAdminPayments() {
@@ -1974,9 +2850,15 @@ async function loadAdminPayments() {
   if (!tbody) return;
   tbody.innerHTML = `<tr><td colspan="6" class="px-3.5 py-4 text-center text-secondary">Loading payment transactions...</td></tr>`;
 
+  const token = await getValidAuthToken();
+  if (!token) {
+    tbody.innerHTML = `<tr><td colspan="6" class="px-3.5 py-4 text-center text-error">Please sign in as Administrator.</td></tr>`;
+    return;
+  }
+
   try {
     const res = await fetch("/api/admin/payments", {
-      headers: { "Authorization": `Bearer ${authToken}` }
+      headers: { "Authorization": `Bearer ${token}` }
     });
     if (res.ok) {
       const data = await res.json();
@@ -2001,6 +2883,8 @@ async function loadAdminPayments() {
           </tr>
         `;
       }).join("");
+    } else {
+      tbody.innerHTML = `<tr><td colspan="6" class="px-3.5 py-4 text-center text-error">Failed to load payments (Authorization required).</td></tr>`;
     }
   } catch (err) {
     tbody.innerHTML = `<tr><td colspan="6" class="px-3.5 py-4 text-center text-error">${escapeHtml(err.message)}</td></tr>`;
@@ -2012,9 +2896,15 @@ async function loadAdminReviews() {
   if (!tbody) return;
   tbody.innerHTML = `<tr><td colspan="6" class="px-3.5 py-4 text-center text-secondary">Loading feedback &amp; reports...</td></tr>`;
 
+  const token = await getValidAuthToken();
+  if (!token) {
+    tbody.innerHTML = `<tr><td colspan="6" class="px-3.5 py-4 text-center text-error">Please sign in as Administrator.</td></tr>`;
+    return;
+  }
+
   try {
     const res = await fetch("/api/admin/reviews", {
-      headers: { "Authorization": `Bearer ${authToken}` }
+      headers: { "Authorization": `Bearer ${token}` }
     });
     if (res.ok) {
       const data = await res.json();
@@ -2089,7 +2979,7 @@ async function loadAdminReviews() {
         `;
       }).join("");
     } else {
-      tbody.innerHTML = `<tr><td colspan="6" class="px-3.5 py-4 text-center text-error">Failed to fetch feedback list.</td></tr>`;
+      tbody.innerHTML = `<tr><td colspan="6" class="px-3.5 py-4 text-center text-error">Failed to fetch feedback list (Authorization required).</td></tr>`;
     }
   } catch (err) {
     tbody.innerHTML = `<tr><td colspan="6" class="px-3.5 py-4 text-center text-error">${escapeHtml(err.message)}</td></tr>`;
@@ -2099,10 +2989,16 @@ async function loadAdminReviews() {
 async function deleteAdminReview(reviewId) {
   if (!confirm(`Are you sure you want to delete review #${reviewId}?`)) return;
 
+  const token = await getValidAuthToken();
+  if (!token) {
+    showToast("Please sign in as Administrator.", "error");
+    return;
+  }
+
   try {
     const res = await fetch(`/api/admin/reviews/${reviewId}`, {
       method: "DELETE",
-      headers: { "Authorization": `Bearer ${authToken}` }
+      headers: { "Authorization": `Bearer ${token}` }
     });
     if (res.ok) {
       showToast(`Review #${reviewId} deleted.`, "success");

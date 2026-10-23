@@ -7,6 +7,7 @@ conditional website enrichment, and export to JSON & CSV.
 import os
 import csv
 import json
+import time
 import datetime
 from typing import List, Dict, Any, Optional, Callable
 
@@ -20,6 +21,7 @@ from backend.temp_store import (
     create_job_sync,
     update_job_sync,
     get_job_sync,
+    add_job_log_sync,
     save_temp_leads_batch_sync,
     increment_anonymous_quota_sync,
     get_anonymous_quota_sync,
@@ -229,11 +231,20 @@ def run_pipeline(
     filtered_leads: List[LeadItem] = []
     seen_place_ids: set = set()
     job_status = "running"
+    start_time = time.time()
+
+    def pipeline_log(msg: str, level: str = "INFO") -> None:
+        print(msg, flush=True)
+        if job_id:
+            try:
+                add_job_log_sync(job_id, msg, level=level)
+            except Exception:
+                pass
 
     total_tasks = len(plan.sub_locations) * len(plan.keywords)
     completed_tasks = 0
 
-    print(f"\n[Pipeline] Starting scrape for {len(plan.sub_locations)} sub-locations and {len(plan.keywords)} keywords ({total_tasks} total searches)...", flush=True)
+    pipeline_log(f"[Pipeline] Starting scrape for {len(plan.sub_locations)} sub-locations and {len(plan.keywords)} keywords ({total_tasks} total searches). Target: {effective_limit or 'Unlimited'} leads.", "INFO")
 
     pending_db_leads: List[LeadItem] = []
 
@@ -477,7 +488,8 @@ def run_pipeline(
     if job_status == "running":
         job_status = "completed"
 
-    print(f"\n[Deduplication & Filtering] {len(filtered_leads)}/{len(all_raw_leads)} unique leads qualified and enriched. Status: {job_status}", flush=True)
+    elapsed_duration = round(time.time() - start_time, 1)
+    pipeline_log(f"[Deduplication & Filtering] {len(filtered_leads)}/{len(all_raw_leads)} unique leads qualified and enriched. Status: {job_status}. Runtime: {elapsed_duration}s", "SUCCESS" if job_status == "completed" else "INFO")
 
     # Trim to exact target requested if batch delivered extra
     if plan.target_leads and len(filtered_leads) > plan.target_leads:
@@ -494,17 +506,18 @@ def run_pipeline(
             status=job_status,
             current_area="Done" if job_status == "completed" else job_status.capitalize(),
             leads_count=len(filtered_leads),
+            duration_seconds=elapsed_duration,
         )
 
     # Step 3: Supabase Cloud Sync (Logged-in verified users only)
     if is_authenticated and session_owner and session_owner.startswith("usr_") and filtered_leads:
         try:
             from backend.supabase_db import save_leads_to_supabase
-            print(f"[Supabase] Syncing {len(filtered_leads)} leads to cloud for verified user {session_owner}...", flush=True)
+            pipeline_log(f"[Supabase] Syncing {len(filtered_leads)} leads to cloud for verified user {session_owner}...", "INFO")
             save_leads_to_supabase(user_uid=session_owner, job_id=job_id or "job_direct", leads=filtered_leads)
-            print("[Supabase] Cloud sync completed successfully.", flush=True)
+            pipeline_log("[Supabase] Cloud sync completed successfully.", "SUCCESS")
         except Exception as sb_err:
-            print(f"[Warning] Supabase auto-sync error: {sb_err}", flush=True)
+            pipeline_log(f"[Warning] Supabase auto-sync error: {sb_err}", "WARN")
 
     # Step 4: Export to JSON & CSV (if requested)
     json_path = None
@@ -517,13 +530,12 @@ def run_pipeline(
         export_leads_to_json(filtered_leads, json_path)
         export_leads_to_csv(filtered_leads, csv_path)
 
-        print(f"\n[Export] Results saved:", flush=True)
-        print(f"  - JSON: {json_path}", flush=True)
-        print(f"  - CSV:  {csv_path}", flush=True)
+        pipeline_log(f"[Export] Results saved to JSON ({json_path}) and CSV ({csv_path})", "INFO")
 
     return {
         "job_id": job_id,
         "status": job_status,
+        "duration_seconds": elapsed_duration,
         "total_raw": len(all_raw_leads),
         "total_filtered": len(filtered_leads),
         "json_path": json_path,

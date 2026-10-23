@@ -131,7 +131,15 @@ def save_leads_to_supabase(
         return 0
 
     saved_total = 0
-    # Chunk records into smaller batches for Supabase HTTP API
+    # Ensure verified_users entry exists for backward compatibility
+    try:
+        prof_resp = client.table("profiles").select("email, full_name").eq("id", user_uid).execute()
+        if prof_resp.data:
+            p = prof_resp.data[0]
+            ensure_verified_user(user_uid=user_uid, email=p.get("email") or f"{user_uid}@user.com", full_name=p.get("full_name"))
+    except Exception:
+        pass
+
     for i in range(0, len(records), batch_size):
         chunk = records[i : i + batch_size]
         client.table("saved_leads").upsert(
@@ -515,21 +523,24 @@ def update_job_record(
     leads_scraped: Optional[int] = None,
     current_area: Optional[str] = None,
     error_message: Optional[str] = None,
+    completed_at: Optional[str] = None,
 ) -> None:
-    """Updates status, count, and error in public.jobs table."""
+    """Updates status, count, duration, and error in public.jobs table."""
     client = get_supabase_client()
     import datetime
     payload = {}
     if status is not None:
         payload["status"] = status
-        if status in ("completed", "stopped", "failed", "limit_reached"):
+        if status in ("completed", "stopped", "failed", "limit_reached") and completed_at is None:
             payload["completed_at"] = datetime.datetime.now(datetime.timezone.utc).isoformat()
+    if completed_at is not None:
+        payload["completed_at"] = completed_at
     if leads_scraped is not None:
         payload["leads_scraped"] = leads_scraped
     if current_area is not None:
         payload["current_area"] = current_area
     if error_message is not None:
-        payload["error_message"] = str(error_message)[:500]
+        payload["error_message"] = str(error_message)[:1000]
 
     if not payload:
         return
@@ -668,21 +679,210 @@ def update_user_plan_or_role(
     return resp.data[0] if resp.data else payload
 
 
-def get_admin_jobs(limit: int = 50) -> List[Dict[str, Any]]:
-    """Fetches all platform jobs across users for error and progress audit."""
+def get_admin_jobs(
+    limit: int = 50,
+    search: Optional[str] = None,
+    status: Optional[str] = None,
+    errors_only: bool = False,
+    user_type: Optional[str] = None,
+) -> List[Dict[str, Any]]:
+    """Fetches all platform jobs across users for error and progress audit, merged with local SQLite jobs."""
     client = get_supabase_client()
+    import datetime
+
+    cloud_jobs = []
     try:
-        resp = (
-            client.table("jobs")
-            .select("*, profiles(email, full_name)")
-            .order("created_at", desc=True)
-            .limit(limit)
-            .execute()
-        )
-        return resp.data or []
+        query = client.table("jobs").select("*").order("created_at", desc=True).limit(limit)
+        if status and status != "all":
+            query = query.eq("status", status)
+        resp = query.execute()
+        cloud_jobs = resp.data or []
+
+        # Populate profile details safely
+        user_ids = list({cj.get("user_id") for cj in cloud_jobs if cj.get("user_id")})
+        if user_ids:
+            try:
+                prof_resp = client.table("profiles").select("id, email, full_name, role").in_("id", user_ids).execute()
+                prof_map = {p["id"]: p for p in (prof_resp.data or [])}
+                for cj in cloud_jobs:
+                    uid = cj.get("user_id")
+                    if uid in prof_map:
+                        cj["profiles"] = prof_map[uid]
+            except Exception:
+                pass
     except Exception as e:
         print(f"[Supabase] Admin jobs fetch error: {e}")
-        return []
+
+    # Fetch recent jobs from local SQLite cache
+    local_jobs = []
+    try:
+        from backend.temp_store import get_all_recent_jobs_sync
+        local_jobs = get_all_recent_jobs_sync(limit=limit)
+    except Exception as e:
+        print(f"[TempStore] Local jobs fetch error: {e}")
+
+    merged: Dict[str, Dict[str, Any]] = {}
+
+    for cj in cloud_jobs:
+        jid = cj.get("id")
+        if not jid:
+            continue
+        prof = cj.get("profiles") or {}
+        email = prof.get("email") or "Registered User"
+        name = prof.get("full_name") or email.split("@")[0]
+        role = prof.get("role") or "user"
+
+        created_str = cj.get("created_at")
+        completed_str = cj.get("completed_at")
+        duration_sec = 0.0
+        if created_str and completed_str:
+            try:
+                t1 = datetime.datetime.fromisoformat(created_str.replace("Z", "+00:00"))
+                t2 = datetime.datetime.fromisoformat(completed_str.replace("Z", "+00:00"))
+                duration_sec = max(0.0, round((t2 - t1).total_seconds(), 1))
+            except Exception:
+                pass
+        elif created_str and cj.get("status") == "running":
+            try:
+                t1 = datetime.datetime.fromisoformat(created_str.replace("Z", "+00:00"))
+                t2 = datetime.datetime.now(datetime.timezone.utc)
+                duration_sec = max(0.0, round((t2 - t1).total_seconds(), 1))
+            except Exception:
+                pass
+
+        err_msg = cj.get("error_message")
+        merged[jid] = {
+            "job_id": jid,
+            "session_owner": cj.get("user_id"),
+            "is_authenticated": True,
+            "user_email": email,
+            "user_name": name,
+            "user_role": role,
+            "prompt": cj.get("prompt", ""),
+            "scrape_website": bool(cj.get("enrichment_enabled")),
+            "status": cj.get("status", "running"),
+            "current_area": cj.get("current_area", ""),
+            "leads_scraped": cj.get("leads_scraped", 0),
+            "target_leads": cj.get("target_leads", 100),
+            "duration_seconds": duration_sec,
+            "error_message": err_msg,
+            "has_error": bool(err_msg or cj.get("status") == "failed"),
+            "created_at": created_str,
+            "completed_at": completed_str,
+            "source": "cloud",
+        }
+
+    for lj in local_jobs:
+        jid = lj.get("job_id")
+        if not jid:
+            continue
+
+        created_str = lj.get("created_at")
+        completed_str = lj.get("completed_at")
+        duration_sec = float(lj.get("duration_seconds") or 0.0)
+        if duration_sec <= 0.0 and created_str:
+            try:
+                t1 = datetime.datetime.fromisoformat(created_str.replace("Z", "+00:00"))
+                t2 = datetime.datetime.fromisoformat(completed_str.replace("Z", "+00:00")) if completed_str else datetime.datetime.now(datetime.timezone.utc)
+                duration_sec = max(0.0, round((t2 - t1).total_seconds(), 1))
+            except Exception:
+                pass
+
+        email = lj.get("user_email")
+        is_auth = bool(lj.get("is_authenticated"))
+        if not email:
+            owner = str(lj.get("session_owner", ""))
+            if is_auth:
+                email = f"User ({owner[:8]})"
+            else:
+                clean_ip = owner.replace("anon_ip_", "").replace("_", ".")
+                email = f"Guest ({clean_ip[:16]})"
+
+        err_msg = lj.get("error_message")
+        item = {
+            "job_id": jid,
+            "session_owner": lj.get("session_owner"),
+            "is_authenticated": is_auth,
+            "user_email": email,
+            "user_name": email.split("@")[0] if "@" in email else email,
+            "user_role": "user" if is_auth else "guest",
+            "prompt": lj.get("prompt", ""),
+            "scrape_website": bool(lj.get("scrape_website")),
+            "status": lj.get("status", "running"),
+            "current_area": lj.get("current_area", ""),
+            "leads_scraped": lj.get("leads_count", 0),
+            "target_leads": lj.get("target_leads", 100),
+            "duration_seconds": duration_sec,
+            "error_message": err_msg,
+            "has_error": bool(err_msg or lj.get("status") == "failed"),
+            "created_at": created_str,
+            "completed_at": completed_str,
+            "source": "local",
+        }
+
+        if jid in merged:
+            if not merged[jid].get("duration_seconds") and duration_sec > 0:
+                merged[jid]["duration_seconds"] = duration_sec
+            if not merged[jid].get("error_message") and item.get("error_message"):
+                merged[jid]["error_message"] = item["error_message"]
+                merged[jid]["has_error"] = True
+            if item.get("scrape_website"):
+                merged[jid]["scrape_website"] = True
+        else:
+            merged[jid] = item
+
+    results = list(merged.values())
+    results.sort(key=lambda x: str(x.get("created_at") or ""), reverse=True)
+
+    if search:
+        s = search.lower().strip()
+        results = [
+            j for j in results
+            if s in (j.get("prompt") or "").lower()
+            or s in (j.get("user_email") or "").lower()
+            or s in (j.get("user_name") or "").lower()
+            or s in (j.get("job_id") or "").lower()
+        ]
+
+    if user_type == "guest":
+        results = [j for j in results if not j.get("is_authenticated") or j.get("user_role") == "guest"]
+    elif user_type == "user":
+        results = [j for j in results if j.get("is_authenticated") and j.get("user_role") != "guest"]
+
+    if errors_only:
+        results = [j for j in results if j.get("has_error")]
+    elif status and status != "all":
+        results = [j for j in results if j.get("status") == status]
+
+    return results[:limit]
+
+
+def get_crm_metrics() -> Dict[str, Any]:
+    """Calculates comprehensive CRM & Debug KPI metrics for the Admin Center."""
+    jobs = get_admin_jobs(limit=200)
+    total_searches = len(jobs)
+    failed_count = sum(1 for j in jobs if j.get("has_error") or j.get("status") == "failed")
+    active_count = sum(1 for j in jobs if j.get("status") == "running")
+    completed_count = sum(1 for j in jobs if j.get("status") == "completed")
+    guest_count = sum(1 for j in jobs if not j.get("is_authenticated") or j.get("user_role") == "guest")
+    user_count = sum(1 for j in jobs if j.get("is_authenticated") and j.get("user_role") != "guest")
+    total_harvested = sum(int(j.get("leads_scraped") or 0) for j in jobs)
+
+    durations = [float(j.get("duration_seconds") or 0.0) for j in jobs if float(j.get("duration_seconds") or 0.0) > 0]
+    avg_duration = round(sum(durations) / len(durations), 1) if durations else 0.0
+    error_rate = round((failed_count / total_searches * 100), 1) if total_searches > 0 else 0.0
+
+    return {
+        "total_searches": total_searches,
+        "failed_searches": failed_count,
+        "active_jobs": active_count,
+        "completed_jobs": completed_count,
+        "guest_searches": guest_count,
+        "user_searches": user_count,
+        "total_harvested_leads": total_harvested,
+        "avg_duration_seconds": avg_duration,
+        "error_rate_percent": error_rate,
+    }
 
 
 def get_admin_payments(limit: int = 50) -> List[Dict[str, Any]]:
@@ -691,12 +891,36 @@ def get_admin_payments(limit: int = 50) -> List[Dict[str, Any]]:
     try:
         resp = (
             client.table("payments")
-            .select("*, profiles(email, full_name), plans(name)")
+            .select("*")
             .order("created_at", desc=True)
             .limit(limit)
             .execute()
         )
-        return resp.data or []
+        payments = resp.data or []
+        user_ids = list({p["user_id"] for p in payments if p.get("user_id")})
+        plan_ids = list({p["plan_id"] for p in payments if p.get("plan_id")})
+        prof_map: Dict[str, Any] = {}
+        plan_map: Dict[str, Any] = {}
+        if user_ids:
+            try:
+                prof_resp = client.table("profiles").select("id, email, full_name").in_("id", user_ids).execute()
+                prof_map = {p["id"]: p for p in (prof_resp.data or [])}
+            except Exception:
+                pass
+        if plan_ids:
+            try:
+                plan_resp = client.table("plans").select("id, name").in_("id", plan_ids).execute()
+                plan_map = {pl["id"]: pl for pl in (plan_resp.data or [])}
+            except Exception:
+                pass
+
+        for p in payments:
+            uid = p.get("user_id")
+            pid = p.get("plan_id")
+            p["profiles"] = prof_map.get(uid, {"email": "User", "full_name": "User"})
+            p["plans"] = plan_map.get(pid, {"name": pid or "Pro"})
+
+        return payments
     except Exception as e:
         print(f"[Supabase] Admin payments fetch error: {e}")
         return []
