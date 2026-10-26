@@ -21,6 +21,11 @@ output/plans/
 GEMINI.md
 .agents/
 skills-lock.json
+brag-output
+graphify-out
+docs
+
+
 
 # Virtual Environments
 venv/

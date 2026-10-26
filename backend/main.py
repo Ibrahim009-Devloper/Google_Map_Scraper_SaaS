@@ -73,6 +73,11 @@ if FRONTEND_DIR.exists():
         return FileResponse(str(FRONTEND_DIR / "index.html"))
 
 
+@app.get("/health", tags=["Health"])
+def health_check():
+    return {"status": "active", "service": "LeadPluse Harvester Pro"}
+
+
 # ============================================================================
 # Concurrency & Active Task Manager (Prevents memory leaks & race conditions)
 # ============================================================================
