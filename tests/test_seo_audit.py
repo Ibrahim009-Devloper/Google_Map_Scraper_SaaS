@@ -280,3 +280,88 @@ def test_missing_input_data_marked_unverified_not_failed():
     assert issues["image_alt"].audit_status == "Unverified"  # 0 images is Unverified
 
 
+def test_calculate_seo_opportunity_score_all_pass_is_zero():
+    from seo_audit.scorer import calculate_seo_opportunity_score
+    from seo_audit.models import AuditIssue
+    from seo_audit.config import SEO_CHECK_WEIGHTS
+
+    issues = {
+        name: AuditIssue(check_name=name, audit_status="Pass", evidence="OK")
+        for name in SEO_CHECK_WEIGHTS
+    }
+    score = calculate_seo_opportunity_score(issues)
+    assert score == 0
+
+
+def test_calculate_seo_opportunity_score_all_fail_is_hundred():
+    from seo_audit.scorer import calculate_seo_opportunity_score
+    from seo_audit.models import AuditIssue
+    from seo_audit.config import SEO_CHECK_WEIGHTS
+
+    issues = {
+        name: AuditIssue(check_name=name, audit_status="Fail", evidence="Failed")
+        for name in SEO_CHECK_WEIGHTS
+    }
+    score = calculate_seo_opportunity_score(issues)
+    assert score == 100
+
+
+def test_calculate_seo_opportunity_score_unverified_excluded_from_denominator():
+    from seo_audit.scorer import calculate_seo_opportunity_score
+    from seo_audit.models import AuditIssue
+
+    # Suppose only 2 checks are verified:
+    # check A (weight 10): Pass (0 pts)
+    # check B (weight 10): Fail (10 pts)
+    # All others: Unverified
+    issues = {
+        "title_tag": AuditIssue(check_name="title_tag", audit_status="Pass", evidence="OK"),  # weight 10
+        "h1_status": AuditIssue(check_name="h1_status", audit_status="Fail", evidence="Fail"),  # weight 10
+    }
+    # Remaining checks marked Unverified
+    from seo_audit.config import SEO_CHECK_WEIGHTS
+    for k in SEO_CHECK_WEIGHTS:
+        if k not in issues:
+            issues[k] = AuditIssue(check_name=k, audit_status="Unverified", evidence="N/A")
+
+    # (0 + 10) / (10 + 10) * 100 = 50%
+    score = calculate_seo_opportunity_score(issues)
+    assert score == 50
+
+
+def test_calculate_seo_opportunity_score_all_unverified_returns_none():
+    from seo_audit.scorer import calculate_seo_opportunity_score
+    from seo_audit.models import AuditIssue
+    from seo_audit.config import SEO_CHECK_WEIGHTS
+
+    issues = {
+        name: AuditIssue(check_name=name, audit_status="Unverified", evidence="N/A")
+        for name in SEO_CHECK_WEIGHTS
+    }
+    score = calculate_seo_opportunity_score(issues)
+    assert score is None
+
+
+def test_calculate_seo_opportunity_score_noindex_enforces_min_85():
+    from seo_audit.scorer import calculate_seo_opportunity_score
+    from seo_audit.models import AuditIssue
+    from seo_audit.config import SEO_CHECK_WEIGHTS
+
+    # Suppose all checks pass except canonical_robots is blocked by noindex
+    issues = {
+        name: AuditIssue(check_name=name, audit_status="Pass", evidence="OK")
+        for name in SEO_CHECK_WEIGHTS
+    }
+    issues["canonical_robots"] = AuditIssue(
+        check_name="canonical_robots",
+        audit_status="Fail",
+        evidence="Page blocked via noindex",
+        xlsx_summary="Blocked (noindex) [Critical]"
+    )
+    # Under normal math: 8 / 100 = 8.
+    # But noindex rule enforces max(8, 85) = 85!
+    score = calculate_seo_opportunity_score(issues)
+    assert score == 85
+
+
+
