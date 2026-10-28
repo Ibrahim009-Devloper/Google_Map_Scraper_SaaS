@@ -412,5 +412,89 @@ def test_network_failure_does_not_stop_lead_pipeline(monkeypatch):
     assert reports[2].opportunity_score is not None
 
 
+def test_xlsx_appender_preserves_existing_columns_and_appends_nine():
+    import io
+    import openpyxl
+    from agent.schemas import LeadItem
+    from backend.excel_exporter import generate_leads_excel
+    from seo_audit.xlsx_appender import append_seo_columns_to_excel
+    from seo_audit.models import SEOReport
+    from seo_audit.auditor import SEO_XLSX_COLUMNS
+
+    # Create dummy leads
+    leads = [
+        LeadItem(
+            place_id="place_1",
+            name="Alpha Roofing",
+            category="Roofing contractor",
+            phone="512-111-2222",
+            website_status="Has Own Website",
+            website_url="https://alpharoofing.com",
+            address="100 Main St, Austin, TX",
+        ),
+        LeadItem(
+            place_id="place_2",
+            name="Beta Plumbing",
+            category="Plumber",
+            phone="512-333-4444",
+            website_status="No Website",
+            website_url=None,
+            address="200 Oak St, Austin, TX",
+        ),
+    ]
+
+    base_excel_bytes = generate_leads_excel(leads)
+
+    # Load base workbook to verify original column count
+    base_wb = openpyxl.load_workbook(io.BytesIO(base_excel_bytes))
+    base_ws = base_wb.active
+    orig_cols = [cell.value for cell in base_ws[1]]
+    orig_col_count = len(orig_cols)
+    assert "Business Name" in orig_cols
+
+    # Prepare audit reports for place_1 (place_2 was not audited)
+    seo_reports = {
+        "place_1": SEOReport(
+            url="https://alpharoofing.com",
+            opportunity_score=15,
+            xlsx_row_data={
+                "Website Speed": "Fast (1.1s)",
+                "Mobile Friendly": "Pass",
+                "Title Tag Status": "Optimal (45 chars)",
+                "Meta Description Status": "Optimal (120 chars)",
+                "H1 Status": "Optimal (1 H1)",
+                "Local Keyword Status": "Pass (City + Niche)",
+                "Schema Status": "Pass (RoofingContractor)",
+                "NAP Status": "Consistent",
+                "SEO Opportunity Score": "15/100",
+            }
+        )
+    }
+
+    modified_bytes = append_seo_columns_to_excel(base_excel_bytes, seo_reports)
+
+    mod_wb = openpyxl.load_workbook(io.BytesIO(modified_bytes))
+    mod_ws = mod_wb.active
+    new_cols = [cell.value for cell in mod_ws[1]]
+
+    # 1. Original columns must be preserved in exact order
+    assert new_cols[:orig_col_count] == orig_cols
+
+    # 2. Exactly 9 new columns appended to the right
+    assert len(new_cols) == orig_col_count + 9
+    assert new_cols[orig_col_count:] == SEO_XLSX_COLUMNS
+
+    # 3. Row 2 (Alpha Roofing) has audited values
+    row2_vals = [cell.value for cell in mod_ws[2]]
+    assert row2_vals[orig_col_count] == "Fast (1.1s)"
+    assert row2_vals[orig_col_count + 8] == "15/100"
+
+    # 4. Row 3 (Beta Plumbing - not audited) has "Not Audited" or "No Website"
+    row3_vals = [cell.value for cell in mod_ws[3]]
+    assert row3_vals[orig_col_count] in ("Not Audited", "No Website")
+    assert row3_vals[orig_col_count + 8] in ("Not Audited", "N/A")
+
+
+
 
 
