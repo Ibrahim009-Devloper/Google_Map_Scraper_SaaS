@@ -154,6 +154,8 @@ class ScrapeStartRequest(BaseModel):
     target_leads: Optional[int] = Field(None, ge=1, le=1000000, description="Requested target leads count (e.g. 50, 10000, 500000)")
     scrape_website: bool = Field(default=False, description="Whether to deep scrape business websites for emails/socials")
     must_have_email: bool = Field(default=False, description="When true, only leads with verified business emails are retained")
+    audit_seo: bool = Field(default=False, description="When true, executes on-demand Local SEO audits for discovered website leads")
+
 
 
 class RegisterRequest(BaseModel):
@@ -559,6 +561,51 @@ async def start_scraping_job(
                 max_leads_limit=limit,
                 export_files=True,
             )
+
+            # Optional: On-Demand Local SEO Audit for Website Leads if requested by user
+            if payload.audit_seo and result.get("leads"):
+                try:
+                    await temp_store.add_job_log(job_id, "Executing on-demand Local SEO audits for website leads...", "SEO")
+                    from seo_audit.auditor import bulk_audit_businesses
+                    from seo_audit.models import AuditInput
+                    from seo_audit.xlsx_appender import append_seo_audit_columns_to_workbook
+                    import os
+
+                    website_leads = [
+                        l for l in result["leads"]
+                        if getattr(l, "website_status", "") == "Has Own Website" and getattr(l, "website_url", None)
+                    ]
+
+                    if website_leads:
+                        audit_inputs = [
+                            AuditInput(
+                                url=l.website_url,
+                                business_name=l.name,
+                                target_city=l.neighborhood or "",
+                                claimed_phone=l.phone_local or l.phone_intl or ""
+                            )
+                            for l in website_leads
+                        ]
+                        reports = await asyncio.to_thread(bulk_audit_businesses, audit_inputs, max_workers=5)
+                        reports_by_url = {r.url: r for r in reports}
+
+                        # Attach reports to leads and persist
+                        for lead in result["leads"]:
+                            if lead.website_url and lead.website_url in reports_by_url:
+                                rep = reports_by_url[lead.website_url]
+                                setattr(lead, "seo_report", rep)
+
+                        await temp_store.save_temp_leads_batch(job_id, result["leads"])
+
+                        # Append to XLSX export if available
+                        xlsx_file = f"data/exports/{job_id}.xlsx"
+                        if os.path.exists(xlsx_file):
+                            await asyncio.to_thread(append_seo_audit_columns_to_workbook, xlsx_file, reports_by_url)
+
+                        await temp_store.add_job_log(job_id, f"Completed Local SEO audit for {len(reports)} websites.", "SEO")
+                except Exception as seo_err:
+                    print(f"[SEO Audit Error] Job {job_id}: {seo_err}", flush=True)
+                    await temp_store.add_job_log(job_id, f"Local SEO audit notice: {str(seo_err)}", "WARN")
 
             # Record usage and update job in Supabase
             if is_authenticated and user_id:

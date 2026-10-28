@@ -776,6 +776,8 @@ async function startScrapingJob() {
   const scrapeWebsite = scrapeWebsitesToggle ? scrapeWebsitesToggle.checked : false;
   const mustHaveEmailToggle = document.getElementById("mustHaveEmailToggle");
   const mustHaveEmail = scrapeWebsite && mustHaveEmailToggle ? mustHaveEmailToggle.checked : false;
+  const pageSeoAuditToggle = document.getElementById("pageSeoAuditToggle");
+  const auditSeo = pageSeoAuditToggle ? pageSeoAuditToggle.checked : false;
 
   progressTargetText.innerText = `of ${targetQuota} target entities`;
 
@@ -790,7 +792,7 @@ async function startScrapingJob() {
   renderEmptyState("Initializing AI Geo-Planner & reverse protobuf query...");
 
   appendTerminalLog(`[AI/PLAN] Dispatching user prompt to Geo-Planner: "${prompt.slice(0, 60)}..."`);
-  appendTerminalLog(`[CONFIG] Target: ${targetQuota} leads | Website Scraping: ${scrapeWebsite ? `ENABLED (Emails & Socials | Filter: ${mustHaveEmail ? "Verified Emails Only" : "All Sites"})` : "DISABLED (Fast Google Maps Only)"}`);
+  appendTerminalLog(`[CONFIG] Target: ${targetQuota} leads | Website Scraping: ${scrapeWebsite ? "ENABLED" : "DISABLED"} | Page SEO: ${auditSeo ? "ENABLED" : "DISABLED"}`);
 
   try {
     const headers = { "Content-Type": "application/json" };
@@ -807,6 +809,7 @@ async function startScrapingJob() {
         target_leads: targetQuota,
         scrape_website: scrapeWebsite,
         must_have_email: mustHaveEmail,
+        audit_seo: auditSeo,
       }),
     });
 
@@ -1168,21 +1171,35 @@ function renderLeadsFeed() {
     const initials = getInitials(lead.name);
     const colorClass = getInitialColor(lead.name);
 
-    // Format website link
+    // Format website link & on-demand Page SEO button
     let websiteBadge = "";
     if (lead.website_status === "Has Own Website" && lead.website_url) {
       const domain = cleanDomain(lead.website_url);
+      const seoBadgeHtml = (lead.seo_report && lead.seo_report.opportunity_score !== null && lead.seo_report.opportunity_score !== undefined)
+        ? `<button type="button" onclick="event.stopPropagation(); triggerPageSeoAudit('${lead.place_id}')" class="px-2 py-0.5 rounded text-[10px] font-bold font-label bg-amber-100 hover:bg-amber-200 text-amber-900 border border-amber-300 flex items-center gap-1 shadow-2xs transition-all" title="View Local SEO Audit Report">
+             <span class="material-symbols-outlined text-[12px] text-amber-700">troubleshoot</span>
+             <span>SEO: ${lead.seo_report.opportunity_score}/100</span>
+           </button>`
+        : `<button type="button" onclick="event.stopPropagation(); triggerPageSeoAudit('${lead.place_id}')" class="px-2 py-0.5 rounded text-[10px] font-semibold font-label bg-surface-container hover:bg-amber-50 text-secondary hover:text-amber-900 border border-surface-container-high hover:border-amber-300 flex items-center gap-1 shadow-2xs transition-all" title="Run on-demand Local SEO Audit for this website">
+             <span class="material-symbols-outlined text-[12px] text-amber-600">troubleshoot</span>
+             <span>Page SEO</span>
+           </button>`;
+
       websiteBadge = `
-        <a href="${lead.website_url}" target="_blank" onclick="event.stopPropagation()" class="text-xs font-label text-primary hover:underline flex items-center gap-0.5">
-          ${domain}
-          <span class="material-symbols-outlined text-[12px]">north_east</span>
-        </a>
+        <div class="flex items-center gap-1.5 flex-wrap">
+          <a href="${lead.website_url}" target="_blank" onclick="event.stopPropagation()" class="text-xs font-label text-primary hover:underline flex items-center gap-0.5">
+            ${domain}
+            <span class="material-symbols-outlined text-[12px]">north_east</span>
+          </a>
+          ${seoBadgeHtml}
+        </div>
       `;
     } else if (lead.website_status === "Social Link Only") {
       websiteBadge = `<span class="px-2 py-0.5 rounded text-[10px] font-label font-semibold bg-tertiary-fixed text-on-tertiary-fixed">Social Link Only</span>`;
     } else {
       websiteBadge = `<span class="px-2 py-0.5 rounded text-[10px] font-label font-semibold bg-surface-container text-secondary">No Website</span>`;
     }
+
 
     // Email & Phone tags
     const emailHtml = (lead.emails && lead.emails.length > 0)
@@ -3194,3 +3211,174 @@ function escapeHtml(str) {
     .replace(/"/g, "&quot;")
     .replace(/'/g, "&#039;");
 }
+
+/* =========================================================================
+   ON-DEMAND LOCAL SEO AUDIT INSPECTOR MODAL & CONTROLLER
+   ========================================================================= */
+
+function closeSeoAuditModal() {
+  const modal = document.getElementById("seoAuditModal");
+  if (modal) modal.classList.add("hidden");
+}
+
+async function triggerPageSeoAudit(placeId) {
+  const lead = currentLeads.find(l => l.place_id === placeId);
+  if (!lead) {
+    showToast("Lead not found in current session", "warning");
+    return;
+  }
+  if (!lead.website_url) {
+    showToast("This business does not have a website to audit", "warning");
+    return;
+  }
+
+  const modal = document.getElementById("seoAuditModal");
+  const bizNameEl = document.getElementById("seoModalBizName");
+  const urlEl = document.getElementById("seoModalUrl");
+  const scoreBadgeEl = document.getElementById("seoModalScoreBadge");
+  const pitchBannerEl = document.getElementById("seoModalPitchBanner");
+  const pitchTitleEl = document.getElementById("seoModalPitchTitle");
+  const pitchDescEl = document.getElementById("seoModalPitchDesc");
+  const checksContainerEl = document.getElementById("seoModalChecksContainer");
+
+  if (modal) modal.classList.remove("hidden");
+  if (bizNameEl) bizNameEl.innerText = lead.name || "Business Local SEO Audit";
+  if (urlEl) urlEl.innerText = lead.website_url;
+  if (scoreBadgeEl) {
+    scoreBadgeEl.innerText = "Analyzing...";
+    scoreBadgeEl.className = "px-2.5 py-0.5 rounded-full text-xs font-bold font-label bg-amber-100 text-amber-900 border border-amber-300 animate-pulse";
+  }
+  if (pitchBannerEl) pitchBannerEl.classList.remove("hidden");
+  if (pitchTitleEl) pitchTitleEl.innerText = "Local SEO Opportunity Angle";
+  if (pitchDescEl) pitchDescEl.innerText = "Running 11 on-page Local SEO checks (Speed, Schema, NAP, Meta, H1)...";
+  if (checksContainerEl) {
+    checksContainerEl.innerHTML = `
+      <div class="text-secondary text-center py-8 text-xs flex flex-col items-center justify-center gap-2">
+        <span class="material-symbols-outlined text-[32px] animate-spin text-primary">sync</span>
+        <p>Analyzing website with Chrome TLS 124 impersonation...</p>
+      </div>
+    `;
+  }
+
+  // If already audited and cached on the lead object
+  if (lead.seo_report && lead.seo_report.opportunity_score !== undefined) {
+    renderSeoAuditReportInModal(lead, lead.seo_report);
+    return;
+  }
+
+  try {
+    const res = await fetch("/api/seo-audit", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        url: lead.website_url,
+        business_name: lead.name,
+        target_city: lead.neighborhood || "",
+        claimed_phone: lead.phone_local || lead.phone_intl || ""
+      })
+    });
+
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      throw new Error(err.detail || `Server responded with ${res.status}`);
+    }
+
+    const report = await res.json();
+    lead.seo_report = report;
+    renderSeoAuditReportInModal(lead, report);
+    renderLeadsFeed(); // Re-render feed to reflect updated SEO score badge on lead card
+  } catch (err) {
+    console.error("SEO Audit Error:", err);
+    if (scoreBadgeEl) {
+      scoreBadgeEl.innerText = "Audit Failed";
+      scoreBadgeEl.className = "px-2.5 py-0.5 rounded-full text-xs font-bold font-label bg-red-100 text-red-800 border border-red-300";
+    }
+    if (checksContainerEl) {
+      checksContainerEl.innerHTML = `
+        <div class="p-4 rounded-xl bg-red-50 border border-red-200 text-red-800 text-xs">
+          <p class="font-bold flex items-center gap-1.5 mb-1">
+            <span class="material-symbols-outlined text-[16px]">error</span>
+            Audit could not be completed
+          </p>
+          <p>${escapeHtml(err.message)}</p>
+        </div>
+      `;
+    }
+  }
+}
+
+function renderSeoAuditReportInModal(lead, report) {
+  const scoreBadgeEl = document.getElementById("seoModalScoreBadge");
+  const pitchTitleEl = document.getElementById("seoModalPitchTitle");
+  const pitchDescEl = document.getElementById("seoModalPitchDesc");
+  const checksContainerEl = document.getElementById("seoModalChecksContainer");
+
+  const score = report.opportunity_score !== null && report.opportunity_score !== undefined
+    ? report.opportunity_score
+    : "N/A";
+
+  let badgeColor = "bg-surface-container text-secondary border-surface-container-high";
+  if (typeof score === "number") {
+    if (score >= 70) badgeColor = "bg-emerald-100 text-emerald-900 border-emerald-300";
+    else if (score >= 40) badgeColor = "bg-amber-100 text-amber-900 border-amber-300";
+    else badgeColor = "bg-rose-100 text-rose-900 border-rose-300";
+  }
+
+  if (scoreBadgeEl) {
+    scoreBadgeEl.innerText = `Opportunity Score: ${score}/100`;
+    scoreBadgeEl.className = `px-2.5 py-0.5 rounded-full text-xs font-bold font-label border ${badgeColor}`;
+  }
+
+  if (pitchTitleEl) {
+    pitchTitleEl.innerText = report.client_pitch_angle || "Local SEO Opportunity Summary";
+  }
+  if (pitchDescEl) {
+    pitchDescEl.innerText = `Audit Status: ${report.status} | Total Issues: ${(report.issues || []).length} | Verified Checks: ${report.verified_checks_count || 0}/11`;
+  }
+
+  if (checksContainerEl) {
+    const issues = report.issues || [];
+    if (issues.length === 0) {
+      checksContainerEl.innerHTML = `
+        <div class="p-4 rounded-xl bg-emerald-50 border border-emerald-200 text-emerald-800 text-xs">
+          <p class="font-bold flex items-center gap-1.5 mb-1">
+            <span class="material-symbols-outlined text-[16px]">check_circle</span>
+            All 11 on-page Local SEO checks passed cleanly!
+          </p>
+          <p>No major technical or on-page Local SEO issues were detected on the homepage.</p>
+        </div>
+      `;
+      return;
+    }
+
+    checksContainerEl.innerHTML = issues.map(iss => {
+      let prioClass = "bg-surface-container text-secondary border-surface-container-high";
+      if (iss.priority === "critical") prioClass = "bg-rose-100 text-rose-900 border-rose-300";
+      else if (iss.priority === "high") prioClass = "bg-amber-100 text-amber-900 border-amber-300";
+      else if (iss.priority === "medium") prioClass = "bg-blue-100 text-blue-900 border-blue-300";
+
+      return `
+        <div class="p-3 rounded-xl bg-surface-container-low border border-surface-container-high/60 flex flex-col gap-1 text-xs">
+          <div class="flex items-center justify-between gap-2">
+            <div class="flex items-center gap-1.5 font-bold text-on-surface">
+              <span class="material-symbols-outlined text-[16px] ${iss.passed ? "text-emerald-600" : "text-amber-600"}">
+                ${iss.passed ? "check_circle" : "warning"}
+              </span>
+              <span>${escapeHtml(iss.check_name)}</span>
+            </div>
+            <span class="px-2 py-0.5 rounded text-[10px] font-bold uppercase tracking-wider border ${prioClass}">
+              ${escapeHtml(iss.priority)}
+            </span>
+          </div>
+          <p class="text-secondary text-[11px] pl-5">${escapeHtml(iss.finding)}</p>
+          ${iss.recommendation ? `
+            <div class="mt-1 pl-5 text-[11px] text-primary bg-primary/5 p-1.5 rounded-lg border border-primary/10">
+              <span class="font-semibold">Fix:</span> ${escapeHtml(iss.recommendation)}
+            </div>
+          ` : ""}
+        </div>
+      `;
+    }).join("");
+  }
+}
+
