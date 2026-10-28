@@ -495,6 +495,61 @@ def test_xlsx_appender_preserves_existing_columns_and_appends_nine():
     assert row3_vals[orig_col_count + 8] in ("Not Audited", "N/A")
 
 
+def test_api_seo_audit_endpoints(monkeypatch):
+    from fastapi.testclient import TestClient
+    from backend.main import app
+    from seo_audit.fetcher import FetchResult
+
+    client = TestClient(app)
+
+    def mock_fetch(url, **kwargs):
+        return FetchResult(
+            url=url,
+            status_code=200,
+            elapsed_seconds=1.2,
+            html="<!DOCTYPE html><html><head><meta name='viewport' content='width=device-width'><title>Austin Plumber</title></head><body><h1>Austin Plumber</h1></body></html>",
+        )
+
+    from seo_audit import fetcher
+    monkeypatch.setattr(fetcher, "fetch_page_for_audit", mock_fetch)
+
+    # Test Single Audit Endpoint: POST /api/seo-audit
+    resp = client.post(
+        "/api/seo-audit",
+        json={
+            "url": "https://austinplumber.com",
+            "business_name": "Austin Plumber Co",
+            "category": "Plumber",
+            "city": "Austin",
+        }
+    )
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["url"] == "https://austinplumber.com"
+    assert "opportunity_score" in data
+    assert "xlsx_row_data" in data
+    assert "Website Speed" in data["xlsx_row_data"]
+
+    # Test Bulk Audit Endpoint: POST /api/seo-audit/bulk
+    resp_bulk = client.post(
+        "/api/seo-audit/bulk",
+        json=[
+            {
+                "url": "https://austinplumber.com",
+                "business_name": "Austin Plumber Co",
+                "category": "Plumber",
+                "city": "Austin",
+            }
+        ]
+    )
+    assert resp_bulk.status_code == 200
+    bulk_data = resp_bulk.json()
+    assert isinstance(bulk_data, list)
+    assert len(bulk_data) == 1
+    assert bulk_data[0]["url"] == "https://austinplumber.com"
+
+
+
 
 
 

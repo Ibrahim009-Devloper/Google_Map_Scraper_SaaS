@@ -40,6 +40,9 @@ from backend import temp_store
 from backend import security
 from backend import supabase_db
 from backend.excel_exporter import generate_leads_excel
+from seo_audit.routes import router as seo_router
+from seo_audit.xlsx_appender import append_seo_columns_to_excel
+
 
 
 # Rate Limiter setup
@@ -62,6 +65,9 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# On-Demand Local SEO Audit Routes
+app.include_router(seo_router, prefix="/api")
 
 # Frontend Static Assets & Root Route
 FRONTEND_DIR = Path(__file__).resolve().parent.parent / "frontend"
@@ -752,6 +758,7 @@ async def stop_scraping_job(
 async def download_scraped_leads(
     job_id: str,
     format: str = Query("csv", pattern="^(csv|json|xlsx)$"),
+    include_seo: bool = Query(False),
 ):
     """
     Downloads all leads scraped during the specified job session.
@@ -782,6 +789,8 @@ async def download_scraped_leads(
 
     if format == "xlsx":
         excel_bytes = generate_leads_excel(leads, title=f"Job {job_id}", include_enrichment=include_enrichment)
+        if include_seo:
+            excel_bytes = append_seo_columns_to_excel(excel_bytes, {})
         return Response(
             content=excel_bytes,
             media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
