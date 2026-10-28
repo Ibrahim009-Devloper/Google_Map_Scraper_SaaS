@@ -48,14 +48,22 @@ def filter_lead(lead: LeadItem, plan: ActionPlan) -> bool:
         if not lead.phone or not str(lead.phone).strip():
             return False
 
-    # 3. Minimum Rating Filter
-    if filters.min_rating > 0.0:
-        if lead.rating is None or lead.rating < filters.min_rating:
+    # 3. Rating Filter (Minimum & Maximum)
+    has_rating_filter = (filters.min_rating > 0.0) or (filters.max_rating is not None)
+    if has_rating_filter:
+        if lead.rating is None:
+            return False
+        if filters.min_rating > 0.0 and lead.rating < filters.min_rating:
+            return False
+        if filters.max_rating is not None and lead.rating > filters.max_rating:
             return False
 
-    # 4. Minimum Reviews Filter
+    # 4. Reviews Filter (Minimum & Maximum)
     if filters.min_reviews > 0:
         if lead.reviews_count < filters.min_reviews:
+            return False
+    if filters.max_reviews is not None:
+        if lead.reviews_count > filters.max_reviews:
             return False
 
     return True
@@ -440,6 +448,7 @@ def run_pipeline(
             target_leads=int(effective_limit * (1 + 0.5 * expansion_round)),
             keywords=plan.keywords,
             country_code=plan.country_code or "bd",
+            min_additional_locations=6 * expansion_round,
         )
         new_locs = expanded_locs[current_count:]
         if not new_locs:

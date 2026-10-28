@@ -43,13 +43,17 @@ RULES:
    - Set "website_requirement": "any" if the user wants all leads regardless of website status.
 5. WEBSITE ENRICHMENT (DEEP SCRAPER):
    - Unless the user specifically asks for "no_website" (leads without websites), ALWAYS enable website enrichment by default ("enabled": true, "extract_emails": true, "extract_socials": true, "detect_cms": true) so that emails and social links are scraped from business websites.
-   - Set "enabled": false ONLY when "website_requirement" is "no_website".
-6. COUNTRY & LANGUAGE:
+6. RATING & REVIEWS FILTERS:
+   - "min_rating": float (default 0.0). If user says e.g. "rating 3.5 to 3.99" or "above 4 star", min_rating = 3.5 (or 4.0).
+   - "max_rating": float or null. If user specifies an upper rating bound (e.g. "rating 3.5 to 3.99", "under 4.0 rating"), max_rating = 3.99 (or 4.0). Otherwise null.
+   - "min_reviews": integer (default 0). If user says e.g. "review 5-30" or "at least 10 reviews", min_reviews = 5 (or 10).
+   - "max_reviews": integer or null. If user specifies an upper review bound (e.g. "review 5-30", "under 50 reviews"), max_reviews = 30 (or 50). Otherwise null.
+7. COUNTRY & LANGUAGE:
    - Infer the country code (e.g., "bd" for Bangladesh, "us" for USA, "gb" for UK) from the requested location.
    - Default language is "en".
-7. PAGINATION & SPEED:
+8. PAGINATION & SPEED:
    - Set "max_pages_per_search": 6 (fetching all 6 pagination offsets for up to 120 leads per zone) to maximize yield per location.
-8. OUTPUT: Respond ONLY with valid JSON matching the exact schema. No markdown fences or extra conversational text.
+9. OUTPUT: Respond ONLY with valid JSON matching the exact schema. No markdown fences or extra conversational text.
 
 Output JSON Schema:
 {
@@ -70,7 +74,9 @@ Output JSON Schema:
     "website_requirement": "no_website" | "has_real_website" | "any",
     "must_have_phone": boolean,
     "min_rating": float,
+    "max_rating": float | null,
     "min_reviews": integer,
+    "max_reviews": integer | null,
     "max_pages_per_search": integer
   },
   "enrichment": {
@@ -207,6 +213,135 @@ def extract_target_count(prompt: str) -> Optional[int]:
         return val
 
     return None
+
+
+def extract_rating_range(prompt: str) -> tuple[Optional[float], Optional[float]]:
+    """
+    Extracts min_rating and max_rating from natural language queries.
+    Handles 'rating 3.5 to 3.99', 'ratting 3.5-4.0', 'between 3.5 and 4.0 rating',
+    'rating under 4.0', 'rating above 4.2', '4+ star', Bengali numbers, etc.
+    """
+    if not prompt:
+        return None, None
+
+    # Normalize Bengali numerals
+    bengali_digits = "০১২৩৪৫৬৭৮৯"
+    text = prompt
+    for i, b_char in enumerate(bengali_digits):
+        text = text.replace(b_char, str(i))
+
+    text_lower = text.lower()
+
+    # 1. Two-sided range: "ratting/rating/star 3.5 to 3.99", "3.5 - 3.99 star/rating", "between 3.5 and 3.99"
+    patterns_two_sided = [
+        r'(?:rat+ings?|stars?)\s*(?:of|is|between)?\s*([0-5](?:\.\d{1,2})?)\s*(?:to|-|and|থেকে|হতে)\s*([0-5](?:\.\d{1,2})?)',
+        r'(?:between\s+)?([0-5](?:\.\d{1,2})?)\s*(?:to|-|and|থেকে|হতে)\s*([0-5](?:\.\d{1,2})?)\s*(?:rat+ings?|stars?|স্টার|রেটিং)',
+    ]
+    for pattern in patterns_two_sided:
+        m = re.search(pattern, text_lower)
+        if m:
+            try:
+                v1 = float(m.group(1))
+                v2 = float(m.group(2))
+                return min(v1, v2), max(v1, v2)
+            except ValueError:
+                pass
+
+    # 2. Upper bound only: "rating under 4", "rating below 3.5", "rating less than 4", "max rating 4"
+    patterns_upper = [
+        r'(?:rat+ings?|stars?)\s*(?:under|below|less than|up to|maximum|max|সর্বোচ্চ|নিচে)\s*([0-5](?:\.\d{1,2})?)',
+        r'(?:under|below|less than|up to|maximum|max|সর্বোচ্চ)\s*([0-5](?:\.\d{1,2})?)\s*(?:rat+ings?|stars?|স্টার|রেটিং)',
+    ]
+    for pattern in patterns_upper:
+        m = re.search(pattern, text_lower)
+        if m:
+            try:
+                v = float(m.group(1))
+                return 0.0, v
+            except ValueError:
+                pass
+
+    # 3. Lower bound only: "rating above 4", "rating over 3.5", "rating > 4", "min rating 4", "4+ star"
+    patterns_lower = [
+        r'(?:rat+ings?|stars?)\s*(?:above|over|greater than|at least|minimum|min|উপরে|নূন্যতম|\>)\s*([0-5](?:\.\d{1,2})?)',
+        r'(?:above|over|greater than|at least|minimum|min|নূন্যতম)\s*([0-5](?:\.\d{1,2})?)\s*(?:rat+ings?|stars?|স্টার|রেটিং)',
+        r'([0-5](?:\.\d{1,2})?)\s*\+\s*(?:rat+ings?|stars?|স্টার|রেটিং)',
+        r'([0-5](?:\.\d{1,2})?)\s*(?:stars?|স্টার|রেটিং)\s*(?:and above|or higher|or more|বা তার বেশি)',
+    ]
+    for pattern in patterns_lower:
+        m = re.search(pattern, text_lower)
+        if m:
+            try:
+                v = float(m.group(1))
+                return v, None
+            except ValueError:
+                pass
+
+    return None, None
+
+
+def extract_review_range(prompt: str) -> tuple[Optional[int], Optional[int]]:
+    """
+    Extracts min_reviews and max_reviews from natural language queries.
+    Handles 'review 5-30', '5 to 30 reviews', 'under 50 reviews', '100+ reviews', Bengali numbers, etc.
+    """
+    if not prompt:
+        return None, None
+
+    # Normalize Bengali numerals
+    bengali_digits = "০১২৩৪৫৬৭৮৯"
+    text = prompt
+    for i, b_char in enumerate(bengali_digits):
+        text = text.replace(b_char, str(i))
+
+    text_lower = text.lower()
+
+    # 1. Two-sided range: "review(s) 5-30", "5 to 30 reviews", "between 5 and 30 reviews"
+    patterns_two_sided = [
+        r'(?:reviews?|রিভিউ)\s*(?:of|is|between)?\s*(\d+)\s*(?:to|-|and|থেকে|হতে)\s*(\d+)',
+        r'(?:between\s+)?(\d+)\s*(?:to|-|and|থেকে|হতে)\s*(\d+)\s*(?:reviews?|রিভিউ)',
+    ]
+    for pattern in patterns_two_sided:
+        m = re.search(pattern, text_lower)
+        if m:
+            try:
+                v1 = int(m.group(1))
+                v2 = int(m.group(2))
+                return min(v1, v2), max(v1, v2)
+            except ValueError:
+                pass
+
+    # 2. Upper bound only: "under 30 reviews", "reviews under 30", "max 30 reviews"
+    patterns_upper = [
+        r'(?:reviews?|রিভিউ)\s*(?:under|below|less than|up to|maximum|max|সর্বোচ্চ|নিচে)\s*(\d+)',
+        r'(?:under|below|less than|up to|maximum|max|সর্বোচ্চ)\s*(\d+)\s*(?:reviews?|রিভিউ)',
+    ]
+    for pattern in patterns_upper:
+        m = re.search(pattern, text_lower)
+        if m:
+            try:
+                v = int(m.group(1))
+                return 0, v
+            except ValueError:
+                pass
+
+    # 3. Lower bound only: "100+ reviews", "at least 50 reviews", "min 50 reviews", "reviews above 50"
+    patterns_lower = [
+        r'(?:reviews?|রিভিউ)\s*(?:above|over|greater than|at least|minimum|min|উপরে|নূন্যতম|\>)\s*(\d+)',
+        r'(?:above|over|greater than|at least|minimum|min|নূন্যতম)\s*(\d+)\s*(?:reviews?|রিভিউ)',
+        r'(\d+)\s*\+\s*(?:reviews?|রিভিউ)',
+        r'(\d+)\s*(?:reviews?|রিভিউ)\s*(?:and above|or higher|or more|বা তার বেশি)',
+    ]
+    for pattern in patterns_lower:
+        m = re.search(pattern, text_lower)
+        if m:
+            try:
+                v = int(m.group(1))
+                return v, None
+            except ValueError:
+                pass
+
+    return None, None
 
 
 def get_default_sub_locations(country_code: str = "bd") -> List[SubLocation]:
@@ -382,6 +517,10 @@ def detect_and_preserve_core_keyword(user_prompt: str, generated_keywords: List[
         core_kw = "Real estate agency"
     elif any(w in p_lower for w in ["lawyer", "attorney", "law firm", "আইনজীবী"]):
         core_kw = "Law firm"
+    elif any(w in p_lower for w in ["electrician", "electricians", "electrical"]):
+        core_kw = "Electrician"
+    elif any(w in p_lower for w in ["plumber", "plumbers", "plumbing"]):
+        core_kw = "Plumber"
 
     # Assemble cleaned keywords: core keyword first, followed by unique valid generated keywords
     final_keywords: List[str] = []
@@ -403,10 +542,12 @@ def expand_sub_locations_for_target(
     target_leads: int,
     keywords: List[str],
     country_code: str = "bd",
+    min_additional_locations: int = 0,
 ) -> List[SubLocation]:
     """
     Dynamically scales sub-locations to ensure sufficient geographic coverage
-    for large lead targets (e.g. 5,000, 10,000, 50,000, 500,000 leads).
+    for large lead targets (e.g. 5,000, 10,000, 50,000, 500,000 leads)
+    or when additional exploration zones are required to satisfy strict filters.
     Google Maps reverse API returns up to 120 leads per query (6 pages * 20 results).
     Assuming an average unique yield of ~70 leads per search:
         needed_searches = ceil(target_leads / 70)
@@ -417,13 +558,16 @@ def expand_sub_locations_for_target(
     if not base_sub_locations:
         base_sub_locations = get_default_sub_locations(country_code)
 
-    if not target_leads or target_leads <= 100:
+    if (not target_leads or target_leads <= 100) and min_additional_locations <= 0:
         return base_sub_locations
 
     num_keywords = max(1, len(keywords))
     avg_yield_per_search = 70.0
-    needed_searches = max(1, math.ceil(target_leads / avg_yield_per_search))
-    needed_locations = max(len(base_sub_locations), math.ceil(needed_searches / num_keywords))
+    needed_searches = max(1, math.ceil((target_leads or 100) / avg_yield_per_search))
+    needed_locations = max(
+        len(base_sub_locations) + min_additional_locations,
+        math.ceil(needed_searches / num_keywords),
+    )
 
     if len(base_sub_locations) >= needed_locations:
         return base_sub_locations
@@ -527,6 +671,9 @@ def create_offline_fallback_plan(user_prompt: str, target_leads: Optional[int] =
     if final_target and final_target > 100:
         sub_locations = expand_sub_locations_for_target(sub_locations, final_target, keywords, country_code)
 
+    fb_min_r, fb_max_r = extract_rating_range(user_prompt)
+    fb_min_rev, fb_max_rev = extract_review_range(user_prompt)
+
     return ActionPlan(
         user_prompt=user_prompt,
         keywords=keywords,
@@ -537,8 +684,10 @@ def create_offline_fallback_plan(user_prompt: str, target_leads: Optional[int] =
         filters=FilterConfig(
             website_requirement="no_website" if is_no_website else "any",
             must_have_phone=True,
-            min_rating=0.0,
-            min_reviews=0,
+            min_rating=fb_min_r if fb_min_r is not None else 0.0,
+            max_rating=fb_max_r,
+            min_reviews=fb_min_rev if fb_min_rev is not None else 0,
+            max_reviews=fb_max_rev,
             max_pages_per_search=6 if (final_target and final_target >= 100) else 3,
         ),
         enrichment=EnrichmentConfig(
@@ -640,6 +789,19 @@ def generate_plan(
             plan.enrichment.extract_emails = True
             plan.enrichment.extract_socials = True
             plan.enrichment.detect_cms = True
+
+        # Rating & Reviews filters extraction & strict enforcement
+        r_min, r_max = extract_rating_range(user_prompt)
+        if r_min is not None:
+            plan.filters.min_rating = r_min
+        if r_max is not None:
+            plan.filters.max_rating = r_max
+
+        rev_min, rev_max = extract_review_range(user_prompt)
+        if rev_min is not None:
+            plan.filters.min_reviews = rev_min
+        if rev_max is not None:
+            plan.filters.max_reviews = rev_max
 
     # Save generated plan to output/plans/
     if save_to_disk:

@@ -570,6 +570,9 @@ def save_temp_leads_batch_sync(job_id: str, leads: List[Union[LeadItem, Dict[str
 
     with get_sync_connection() as conn:
         cursor = conn.cursor()
+        cursor.execute("SELECT COUNT(*) FROM temp_leads WHERE job_id = ?", (job_id,))
+        count_before = cursor.fetchone()[0]
+
         cursor.executemany(
             """
             INSERT INTO temp_leads (job_id, place_id, lead_json) VALUES (?, ?, ?)
@@ -584,7 +587,7 @@ def save_temp_leads_batch_sync(job_id: str, leads: List[Union[LeadItem, Dict[str
         cursor.execute("UPDATE active_jobs SET leads_count = ? WHERE job_id = ?", (count_after, job_id))
         conn.commit()
 
-        return len(records)
+        return max(0, count_after - count_before)
 
 
 async def save_temp_leads_batch(job_id: str, leads: List[Union[LeadItem, Dict[str, Any]]]) -> int:
@@ -612,6 +615,10 @@ async def save_temp_leads_batch(job_id: str, leads: List[Union[LeadItem, Dict[st
         return 0
 
     async with aiosqlite.connect(str(TEMP_DB_PATH)) as db:
+        async with db.execute("SELECT COUNT(*) FROM temp_leads WHERE job_id = ?", (job_id,)) as c:
+            row = await c.fetchone()
+            count_before = row[0] if row else 0
+
         await db.executemany(
             """
             INSERT INTO temp_leads (job_id, place_id, lead_json) VALUES (?, ?, ?)
@@ -627,7 +634,7 @@ async def save_temp_leads_batch(job_id: str, leads: List[Union[LeadItem, Dict[st
         await db.execute("UPDATE active_jobs SET leads_count = ? WHERE job_id = ?", (count_after, job_id))
         await db.commit()
 
-        return len(records)
+        return max(0, count_after - count_before)
 
 
 def get_temp_leads_sync(job_id: str) -> List[LeadItem]:

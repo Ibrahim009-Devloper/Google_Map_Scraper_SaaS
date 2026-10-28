@@ -24,6 +24,9 @@ from rich.prompt import Prompt, Confirm
 from agent.planner import generate_plan
 from agent.pipeline import run_pipeline
 
+# Expose ASGI FastAPI application so both `uvicorn main:app` and `uvicorn backend.main:app` work
+from backend.main import app
+
 console = Console(force_terminal=True)
 
 
@@ -55,13 +58,16 @@ def display_plan_summary_human(plan):
     else:
         loc_str = ", ".join(loc_names[:6]) + f" [dim](+{len(loc_names) - 6} more zones)[/dim]"
 
+    rating_str = f"{plan.filters.min_rating}★" if plan.filters.max_rating is None else f"{plan.filters.min_rating}★ - {plan.filters.max_rating}★"
+    reviews_str = f"{plan.filters.min_reviews}+" if plan.filters.max_reviews is None else f"{plan.filters.min_reviews} - {plan.filters.max_reviews}"
+
     summary_text = f"""[bold cyan]🎯 Target Keywords :[/bold cyan] [bold white]{', '.join(plan.keywords)}[/bold white]
 [bold cyan]📍 Target Areas    :[/bold cyan] [bold green]{loc_str}[/bold green] ([dim]{len(plan.sub_locations)} micro-zones[/dim])
 [bold cyan]🌐 Website Filter  :[/bold cyan] [bold yellow]{web_text}[/bold yellow]
 [bold cyan]📞 Must Have Phone :[/bold cyan] {'[green]Yes[/green]' if plan.filters.must_have_phone else '[dim]No (Optional)[/dim]'}
 [bold cyan]✉️  Extract Emails  :[/bold cyan] {'[green]Yes[/green]' if plan.enrichment.extract_emails else '[dim]No[/dim]'}
 [bold cyan]🔗 Extract Socials :[/bold cyan] {'[green]Yes[/green]' if plan.enrichment.extract_socials else '[dim]No[/dim]'}
-[bold cyan]⭐ Min Rating/Rev  :[/bold cyan] {plan.filters.min_rating}★ / {plan.filters.min_reviews}+ reviews
+[bold cyan]⭐ Rating / Reviews :[/bold cyan] {rating_str} / {reviews_str} reviews
 [bold cyan]📄 Search Depth    :[/bold cyan] Up to {plan.filters.max_pages_per_search * 20} leads per micro-zone"""
 
     console.print(Panel(summary_text, title="[bold yellow]📋 AI Search Plan Preview[/bold yellow]", border_style="cyan", expand=False))

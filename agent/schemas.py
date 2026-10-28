@@ -23,7 +23,9 @@ class FilterConfig(BaseModel):
     must_have_phone: bool = Field(default=False, description="Require a phone number")
     must_have_email: bool = Field(default=False, description="Require at least one verified email when website enrichment is enabled")
     min_rating: float = Field(default=0.0, description="Minimum Google Maps rating (0.0 to 5.0)")
+    max_rating: Optional[float] = Field(default=None, description="Maximum Google Maps rating (e.g. 3.99 or 4.5)")
     min_reviews: int = Field(default=0, description="Minimum number of user reviews")
+    max_reviews: Optional[int] = Field(default=None, description="Maximum number of user reviews (e.g. 30 or 100)")
     max_pages_per_search: int = Field(
         default=3,
         description="Number of pages (offset 0, 20, 40...) to fetch per sub-location (1 to 6)"
