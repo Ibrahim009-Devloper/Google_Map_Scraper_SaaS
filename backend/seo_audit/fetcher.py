@@ -34,13 +34,13 @@ class FetchResult:
     has_sitemap: bool = False
 
 
-def check_robots_and_sitemap(base_url: str, timeout: float = 1.5) -> Tuple[bool, bool]:
+def check_robots_and_sitemap(base_url: str, timeout: float = 6.0) -> Tuple[bool, bool]:
     r"""
     Lightweight check for /robots.txt and XML Sitemaps (Fix #1 & #3).
-    1. Fetches {base_origin}/robots.txt with allow_redirects=True and 1.5s timeout.
+    1. Fetches {base_origin}/robots.txt with allow_redirects=True and 6s timeout.
     2. Considers robots.txt valid if status_code == 200, length > 10, and "<html" not in text[:200].
     3. Checks for 'Sitemap:\s*(https?://\S+)' directives.
-    4. If no sitemap in robots.txt, sequentially probes /sitemap.xml and /sitemap_index.xml.
+    4. If no sitemap in robots.txt, sequentially probes /sitemap.xml, /sitemap_index.xml, /wp-sitemap.xml.
     5. Validates XML response (contains <urlset, <sitemapindex, <?xml, or xml in Content-Type).
     """
     if not base_url:
@@ -60,7 +60,6 @@ def check_robots_and_sitemap(base_url: str, timeout: float = 1.5) -> Tuple[bool,
 
     has_robots = False
     has_sitemap = False
-    host_unreachable = False
 
     headers = {
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
@@ -84,14 +83,12 @@ def check_robots_and_sitemap(base_url: str, timeout: float = 1.5) -> Tuple[bool,
                 has_robots = True
                 if re.search(r"sitemap:\s*(https?://[^\s\r\n]+)", r_text, re.I):
                     has_sitemap = True
-    except Exception as e:
-        err = str(e).lower()
-        if "timeout" in err or "connection" in err or "resolve" in err:
-            host_unreachable = True
+    except Exception:
+        pass
 
-    # 2. Sequential fallback probe for standard XML sitemaps (skip if host timed out or connection failed)
-    if not has_sitemap and not host_unreachable:
-        sitemap_endpoints = ["/sitemap.xml", "/sitemap_index.xml"]
+    # 2. Sequential fallback probe for standard XML sitemaps
+    if not has_sitemap:
+        sitemap_endpoints = ["/sitemap.xml", "/sitemap_index.xml", "/wp-sitemap.xml"]
         for ep in sitemap_endpoints:
             try:
                 s_resp = requests.get(
@@ -109,10 +106,8 @@ def check_robots_and_sitemap(base_url: str, timeout: float = 1.5) -> Tuple[bool,
                     if any(tag in text_sample for tag in ("<urlset", "<sitemapindex", "<?xml")) or "xml" in c_type:
                         has_sitemap = True
                         break
-            except Exception as e:
-                err = str(e).lower()
-                if "timeout" in err or "connection" in err:
-                    break
+            except Exception:
+                continue
 
     return has_robots, has_sitemap
 
