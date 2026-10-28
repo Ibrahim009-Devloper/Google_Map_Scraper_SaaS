@@ -364,4 +364,53 @@ def test_calculate_seo_opportunity_score_noindex_enforces_min_85():
     assert score == 85
 
 
+def test_network_failure_does_not_stop_lead_pipeline(monkeypatch):
+    from seo_audit.auditor import audit_bulk_businesses
+    from seo_audit.models import AuditInput
+    from seo_audit.fetcher import FetchResult
+
+    # 3 businesses: #1 is good, #2 fails/times out, #3 is good
+    businesses = [
+        AuditInput(url="https://site1.com", business_name="Site One", city="Austin", category="Roofing"),
+        AuditInput(url="https://site2-hangs.com", business_name="Site Two", city="Dallas", category="Plumber"),
+        AuditInput(url="https://site3.com", business_name="Site Three", city="Houston", category="Dentist"),
+    ]
+
+    def mock_fetch(url, **kwargs):
+        if "site2" in url:
+            return FetchResult(
+                url=url,
+                status_code=None,
+                elapsed_seconds=12.0,
+                error_message="Connection timed out after 12s",
+            )
+        return FetchResult(
+            url=url,
+            status_code=200,
+            elapsed_seconds=1.2,
+            html="<html><head><title>Test Site</title></head><body><h1>Service</h1></body></html>",
+        )
+
+    from seo_audit import fetcher
+    monkeypatch.setattr(fetcher, "fetch_page_for_audit", mock_fetch)
+
+    reports = audit_bulk_businesses(businesses)
+    assert len(reports) == 3
+
+    # Business 1 should succeed with a valid report
+    assert reports[0].url == "https://site1.com"
+    assert reports[0].opportunity_score is not None
+    assert "Website Speed" in reports[0].xlsx_row_data
+
+    # Business 2 should report error cleanly without crashing batch
+    assert reports[1].url == "https://site2-hangs.com"
+    assert reports[1].opportunity_score is None or reports[1].opportunity_score == 100  # speed failed, DOM unverified
+    assert reports[1].xlsx_row_data["Website Speed"] == "Failed [High]"
+
+    # Business 3 should succeed
+    assert reports[2].url == "https://site3.com"
+    assert reports[2].opportunity_score is not None
+
+
+
 
