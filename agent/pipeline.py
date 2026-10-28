@@ -299,12 +299,10 @@ def run_pipeline(
         # Add to qualified filtered leads list
         filtered_leads.append(cleaned_lead)
 
-        # Buffer lead for batch database write (reduces disk I/O thrashing by >90%)
+        # Instant real-time streaming: flush each lead immediately to SQLite so the UI displays it without delay
         if job_id:
             pending_db_leads.append(cleaned_lead)
-            batch_threshold = 1 if (effective_limit and effective_limit <= 25) else 15
-            if len(pending_db_leads) >= batch_threshold:
-                flush_pending_db_leads()
+            flush_pending_db_leads()
 
             if on_batch:
                 try:
