@@ -122,3 +122,161 @@ def test_fetch_page_for_audit_timeout(monkeypatch):
     assert res.status_code is None
     assert "timed out" in res.error_message.lower()
 
+
+def test_optimal_website_scores_pass_all_checks():
+    from seo_audit.analyzer import run_all_seo_checks
+    from seo_audit.fetcher import FetchResult
+    from seo_audit.models import AuditInput
+
+    html = """<!DOCTYPE html>
+    <html lang="en">
+    <head>
+        <meta charset="UTF-8">
+        <meta name="viewport" content="width=device-width, initial-scale=1.0">
+        <title>Austin Roofing Contractor | Acme Roofing Austin TX</title>
+        <meta name="description" content="Acme Roofing provides premier roof replacement and repair services in Austin, TX. Call our certified team today for a free estimate!">
+        <link rel="canonical" href="https://acmeroofing.com/">
+        <meta name="robots" content="index, follow">
+        <script type="application/ld+json">
+        {
+            "@context": "https://schema.org",
+            "@type": "RoofingContractor",
+            "name": "Acme Roofing",
+            "telephone": "(512) 555-0199",
+            "address": {
+                "@type": "PostalAddress",
+                "streetAddress": "123 Main St",
+                "addressLocality": "Austin",
+                "postalCode": "78701"
+            }
+        }
+        </script>
+    </head>
+    <body>
+        <h1>Premier Roofing Contractor in Austin, TX</h1>
+        <p>Welcome to Acme Roofing. Serving Austin with quality roofs.</p>
+        <img src="roof.jpg" alt="Acme Roofing team installing roof in Austin">
+        <p>Contact us at (512) 555-0199 or visit 123 Main St, Austin 78701.</p>
+        <a href="tel:5125550199">Call Now</a>
+        <iframe src="https://www.google.com/maps/embed?pb=123"></iframe>
+    </body>
+    </html>"""
+
+    fetch_res = FetchResult(
+        url="https://acmeroofing.com",
+        final_url="https://acmeroofing.com/",
+        status_code=200,
+        elapsed_seconds=1.1,
+        html=html,
+        headers={"content-type": "text/html"},
+    )
+
+    audit_input = AuditInput(
+        url="https://acmeroofing.com",
+        business_name="Acme Roofing",
+        category="Roofing contractor",
+        city="Austin",
+        phone="(512) 555-0199",
+        address="123 Main St, Austin, TX 78701",
+    )
+
+    issues = run_all_seo_checks(audit_input, fetch_res)
+    assert len(issues) == 11
+    # Every check on this well-optimized page should pass
+    for check_name, issue in issues.items():
+        assert issue.audit_status == "Pass", f"{check_name} expected Pass, got {issue.audit_status}: {issue.evidence}"
+
+
+def test_poor_seo_website_fails_all_checks():
+    from seo_audit.analyzer import run_all_seo_checks
+    from seo_audit.fetcher import FetchResult
+    from seo_audit.models import AuditInput
+
+    # Poor HTML: No viewport, generic title "Home", no meta description, 3 H1s, noindex, no alt, missing local keywords, wrong phone, no schema, no map embed
+    html = """<html>
+    <head>
+        <title>Home</title>
+        <meta name="robots" content="noindex, nofollow">
+    </head>
+    <body>
+        <h1>Welcome</h1>
+        <h1>Our Services</h1>
+        <h1>Contact</h1>
+        <img src="banner.jpg">
+        <img src="photo.jpg">
+        <p>Generic business content with completely different phone 212-000-0000 and NY address.</p>
+    </body>
+    </html>"""
+
+    fetch_res = FetchResult(
+        url="http://slowbadsite.com",
+        final_url="http://slowbadsite.com/",
+        status_code=200,
+        elapsed_seconds=6.8,  # Slow load time > 5s and HTTP
+        html=html,
+        headers={},
+    )
+
+    audit_input = AuditInput(
+        url="http://slowbadsite.com",
+        business_name="Dallas Plumbers Co",
+        category="Plumber",
+        city="Dallas",
+        phone="214-555-9876",
+        address="789 Elm St, Dallas, TX 75201",
+    )
+
+    issues = run_all_seo_checks(audit_input, fetch_res)
+    assert issues["website_speed"].audit_status == "Fail"
+    assert issues["mobile_friendly"].audit_status == "Fail"
+    assert issues["title_tag"].audit_status == "Fail"
+    assert issues["meta_description"].audit_status == "Fail"
+    assert issues["h1_status"].audit_status == "Warning"  # Multiple H1s is Warning
+    assert issues["canonical_robots"].audit_status == "Fail"  # noindex is Critical Fail
+    assert issues["image_alt"].audit_status == "Warning"  # >30% missing alt is Warning
+    assert issues["local_keywords"].audit_status == "Fail"
+    assert issues["nap_consistency"].audit_status == "Fail"
+    assert issues["schema_markup"].audit_status == "Fail"
+    assert issues["contact_maps_embed"].audit_status == "Fail"
+
+
+def test_missing_input_data_marked_unverified_not_failed():
+    from seo_audit.analyzer import run_all_seo_checks
+    from seo_audit.fetcher import FetchResult
+    from seo_audit.models import AuditInput
+
+    html = """<!DOCTYPE html>
+    <html>
+    <head>
+        <meta name="viewport" content="width=device-width, initial-scale=1.0">
+        <title>General Services Company</title>
+    </head>
+    <body>
+        <h1>General Services</h1>
+    </body>
+    </html>"""
+
+    fetch_res = FetchResult(
+        url="https://general.com",
+        status_code=200,
+        elapsed_seconds=1.0,
+        html=html,
+    )
+
+    # Completely missing city, category, phone, and address from Google Maps input
+    audit_input = AuditInput(
+        url="https://general.com",
+        business_name="General Co",
+        category=None,
+        city=None,
+        phone=None,
+        address=None,
+    )
+
+    issues = run_all_seo_checks(audit_input, fetch_res)
+    # Checks requiring missing input baseline MUST be Unverified
+    assert issues["local_keywords"].audit_status == "Unverified"
+    assert issues["nap_consistency"].audit_status == "Unverified"
+    assert issues["image_alt"].audit_status == "Unverified"  # 0 images is Unverified
+
+
