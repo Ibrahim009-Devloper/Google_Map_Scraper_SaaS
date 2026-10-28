@@ -133,6 +133,7 @@ function setupInputListeners() {
 
   const scrapeWebsitesToggle = document.getElementById("scrapeWebsitesToggle");
   const mustHaveEmailWrapper = document.getElementById("mustHaveEmailWrapper");
+  const pageSeoAuditToggle = document.getElementById("pageSeoAuditToggle");
   if (scrapeWebsitesToggle && mustHaveEmailWrapper) {
     scrapeWebsitesToggle.addEventListener("change", () => {
       if (scrapeWebsitesToggle.checked) {
@@ -145,6 +146,30 @@ function setupInputListeners() {
     });
   }
 
+  // Auto-enable website deep scraping whenever Page SEO audit is selected + visual feedback
+  const pageSeoAuditWrapper = document.getElementById("pageSeoAuditWrapper");
+  function updatePageSeoToggleVisual() {
+    if (!pageSeoAuditToggle || !pageSeoAuditWrapper) return;
+    if (pageSeoAuditToggle.checked) {
+      pageSeoAuditWrapper.className = "inline-flex items-center gap-2 px-3 py-1.5 rounded-lg bg-amber-500/15 border border-amber-500/50 text-amber-900 dark:text-amber-200 transition-all font-semibold shadow-2xs cursor-pointer select-none text-xs font-label";
+    } else {
+      pageSeoAuditWrapper.className = "inline-flex items-center gap-2 px-3 py-1.5 rounded-lg bg-surface-container hover:bg-surface-container-high transition-colors text-xs font-label text-on-surface cursor-pointer select-none border border-transparent hover:border-surface-container-highest";
+    }
+  }
+
+  if (pageSeoAuditToggle) {
+    pageSeoAuditToggle.addEventListener("change", () => {
+      updatePageSeoToggleVisual();
+      if (pageSeoAuditToggle.checked && scrapeWebsitesToggle && !scrapeWebsitesToggle.checked) {
+        scrapeWebsitesToggle.checked = true;
+        if (mustHaveEmailWrapper) {
+          mustHaveEmailWrapper.classList.remove("hidden");
+          mustHaveEmailWrapper.classList.add("inline-flex");
+        }
+      }
+    });
+  }
+
   scraperPrompt.addEventListener("input", () => {
     const val = scraperPrompt.value;
     const len = val.length;
@@ -153,6 +178,19 @@ function setupInputListeners() {
       charBudgetCounter.classList.add("text-error", "font-semibold");
     } else {
       charBudgetCounter.classList.remove("text-error", "font-semibold");
+    }
+
+    // Auto-enable Page SEO if user mentions SEO/audit in prompt
+    if (pageSeoAuditToggle && !pageSeoAuditToggle.checked && /(?:seo|audit|page\s*seo|local\s*seo)/i.test(val)) {
+      pageSeoAuditToggle.checked = true;
+      updatePageSeoToggleVisual();
+      if (scrapeWebsitesToggle && !scrapeWebsitesToggle.checked) {
+        scrapeWebsitesToggle.checked = true;
+        if (mustHaveEmailWrapper) {
+          mustHaveEmailWrapper.classList.remove("hidden");
+          mustHaveEmailWrapper.classList.add("inline-flex");
+        }
+      }
     }
 
     // Auto-detect target count from user prompt and sync dropdown chip
@@ -1175,12 +1213,20 @@ function renderLeadsFeed() {
     let websiteBadge = "";
     if (lead.website_status === "Has Own Website" && lead.website_url) {
       const domain = cleanDomain(lead.website_url);
-      const seoBadgeHtml = (lead.seo_report && lead.seo_report.opportunity_score !== null && lead.seo_report.opportunity_score !== undefined)
-        ? `<button type="button" onclick="event.stopPropagation(); triggerPageSeoAudit('${lead.place_id}')" class="px-2 py-0.5 rounded text-[10px] font-bold font-label bg-amber-100 hover:bg-amber-200 text-amber-900 border border-amber-300 flex items-center gap-1 shadow-2xs transition-all" title="View Local SEO Audit Report">
-             <span class="material-symbols-outlined text-[12px] text-amber-700">troubleshoot</span>
-             <span>SEO: ${lead.seo_report.opportunity_score}/100</span>
+      const hasAudited = Boolean(lead.seo_report && (lead.seo_report.seo_health_score !== undefined || lead.seo_report.opportunity_score !== undefined));
+      const healthScore = lead.seo_report ? (lead.seo_report.seo_health_score ?? (lead.seo_report.opportunity_score !== null && lead.seo_report.opportunity_score !== undefined ? 100 - lead.seo_report.opportunity_score : null)) : null;
+      let badgeClass = "bg-amber-100 hover:bg-amber-200 text-amber-900 border-amber-300";
+      if (typeof healthScore === "number") {
+        if (healthScore >= 80) badgeClass = "bg-emerald-100 hover:bg-emerald-200 text-emerald-900 border-emerald-300";
+        else if (healthScore < 50) badgeClass = "bg-rose-100 hover:bg-rose-200 text-rose-900 border-rose-300";
+      }
+      const scoreLabel = healthScore !== null ? `Health: ${healthScore}/100` : "SEO Audited";
+      const seoBadgeHtml = hasAudited
+        ? `<button type="button" onclick="event.stopPropagation(); triggerPageSeoAudit('${lead.place_id}')" class="px-2 py-0.5 rounded text-[10px] font-bold font-label ${badgeClass} border flex items-center gap-1 shadow-2xs transition-all cursor-pointer" title="View Agency-Grade Local SEO Audit & Outreach Hook">
+             <span class="material-symbols-outlined text-[12px]">troubleshoot</span>
+             <span>${scoreLabel}</span>
            </button>`
-        : `<button type="button" onclick="event.stopPropagation(); triggerPageSeoAudit('${lead.place_id}')" class="px-2 py-0.5 rounded text-[10px] font-semibold font-label bg-surface-container hover:bg-amber-50 text-secondary hover:text-amber-900 border border-surface-container-high hover:border-amber-300 flex items-center gap-1 shadow-2xs transition-all" title="Run on-demand Local SEO Audit for this website">
+        : `<button type="button" onclick="event.stopPropagation(); triggerPageSeoAudit('${lead.place_id}')" class="px-2 py-0.5 rounded text-[10px] font-semibold font-label bg-surface-container hover:bg-amber-50 text-secondary hover:text-amber-900 border border-surface-container-high hover:border-amber-300 flex items-center gap-1 shadow-2xs transition-all cursor-pointer" title="Run on-demand Local SEO Audit for this website">
              <span class="material-symbols-outlined text-[12px] text-amber-600">troubleshoot</span>
              <span>Page SEO</span>
            </button>`;
@@ -1294,7 +1340,9 @@ function downloadExport(format) {
   const targetJobId = currentJobId || "current";
   appendTerminalLog(`[EXPORT] Preparing ${format.toUpperCase()} archive download for ${allLeads.length} leads...`);
 
-  const downloadUrl = `/api/scrape/download/${targetJobId}?format=${format}`;
+  const pageSeoAuditToggle = document.getElementById("pageSeoAuditToggle");
+  const hasSeo = (pageSeoAuditToggle && pageSeoAuditToggle.checked) || allLeads.some(l => l.seo_report);
+  const downloadUrl = `/api/scrape/download/${targetJobId}?format=${format}${hasSeo ? '&include_seo=true' : ''}`;
   const link = document.createElement("a");
   link.href = downloadUrl;
   link.setAttribute("download", `leads_${targetJobId}.${format}`);
@@ -3130,6 +3178,32 @@ function openLeadModal(lead) {
       <p class="font-body text-on-surface bg-surface-container-low p-2 rounded-lg">${webStr}</p>
     </div>
 
+    ${(lead.website_status === "Has Own Website" && lead.website_url) ? `
+      <div class="flex items-center justify-between p-3 rounded-xl ${(lead.seo_report && lead.seo_report.opportunity_score !== undefined && lead.seo_report.opportunity_score !== null) ? 'bg-amber-500/10 border border-amber-500/20' : 'bg-surface-container border border-surface-container-high'} text-xs">
+        <div class="flex items-center gap-2">
+          <span class="material-symbols-outlined text-[20px] text-amber-600">troubleshoot</span>
+          <div>
+            <span class="font-semibold text-on-surface block">Local SEO Audit Report</span>
+            <span class="text-secondary text-[11px]">${(lead.seo_report && lead.seo_report.opportunity_score !== undefined && lead.seo_report.opportunity_score !== null) ? `Opportunity Score: ${lead.seo_report.opportunity_score}/100 • 11 Signals Audited` : 'Audit 11 on-page signals (Speed, Mobile, Schema, NAP, Meta)'}</span>
+          </div>
+        </div>
+        <button type="button" onclick="closeLeadModal(); triggerPageSeoAudit('${lead.place_id}')" class="px-3 py-1.5 rounded-lg bg-amber-500 hover:bg-amber-600 font-semibold text-white text-xs flex items-center gap-1 shadow-xs transition-all">
+          <span>${(lead.seo_report && lead.seo_report.opportunity_score !== undefined && lead.seo_report.opportunity_score !== null) ? `View Report (${lead.seo_report.opportunity_score}/100)` : 'Run SEO Audit'}</span>
+          <span class="material-symbols-outlined text-[14px]">arrow_forward</span>
+        </button>
+      </div>
+    ` : `
+      <div class="flex items-center justify-between p-3 rounded-xl bg-surface-container/60 border border-surface-container-high text-xs opacity-80">
+        <div class="flex items-center gap-2">
+          <span class="material-symbols-outlined text-[20px] text-secondary">domain_disabled</span>
+          <div>
+            <span class="font-semibold text-on-surface block">Local SEO Status</span>
+            <span class="text-secondary text-[11px]">${lead.website_status === 'Social Link Only' ? 'Social profile only (Local SEO Pitch: Build brand website)' : 'No website listed on Google Maps (Local SEO Pitch: Web development)'}</span>
+          </div>
+        </div>
+      </div>
+    `}
+
     <div class="flex items-center justify-between text-xs pt-2 border-t border-surface-container-high/30">
       <span class="text-secondary">Place ID: <code class="text-primary font-mono text-[10px]">${lead.place_id}</code></span>
       ${mapsStr}
@@ -3222,7 +3296,7 @@ function closeSeoAuditModal() {
 }
 
 async function triggerPageSeoAudit(placeId) {
-  const lead = currentLeads.find(l => l.place_id === placeId);
+  const lead = allLeads.find(l => l.place_id === placeId);
   if (!lead) {
     showToast("Lead not found in current session", "warning");
     return;
@@ -3261,7 +3335,7 @@ async function triggerPageSeoAudit(placeId) {
   }
 
   // If already audited and cached on the lead object
-  if (lead.seo_report && lead.seo_report.opportunity_score !== undefined) {
+  if (lead.seo_report && (lead.seo_report.seo_health_score !== undefined || lead.seo_report.opportunity_score !== undefined)) {
     renderSeoAuditReportInModal(lead, lead.seo_report);
     return;
   }
@@ -3273,8 +3347,14 @@ async function triggerPageSeoAudit(placeId) {
       body: JSON.stringify({
         url: lead.website_url,
         business_name: lead.name,
-        target_city: lead.neighborhood || "",
-        claimed_phone: lead.phone_local || lead.phone_intl || ""
+        category: lead.category || "",
+        city: lead.neighborhood || "",
+        phone: lead.phone || "",
+        address: lead.address || "",
+        rating: lead.rating || null,
+        reviews_count: lead.reviews_count || null,
+        job_id: currentJobId || null,
+        place_id: lead.place_id || null,
       })
     });
 
@@ -3307,73 +3387,147 @@ async function triggerPageSeoAudit(placeId) {
   }
 }
 
+function copySeoHookText() {
+  const hookEl = document.getElementById("seoModalHookText");
+  const copyTextEl = document.getElementById("copySeoHookText");
+  if (!hookEl) return;
+  const rawText = hookEl.innerText.replace(/^["'\s]+|["'\s]+$/g, "");
+  if (!rawText) return;
+  navigator.clipboard.writeText(rawText).then(() => {
+    if (copyTextEl) copyTextEl.innerText = "Copied!";
+    showToast("Personalized cold outreach hook copied to clipboard!", "success");
+    setTimeout(() => {
+      if (copyTextEl) copyTextEl.innerText = "Copy Hook";
+    }, 2500);
+  }).catch(() => {
+    showToast("Failed to copy hook to clipboard", "warning");
+  });
+}
+
 function renderSeoAuditReportInModal(lead, report) {
   const scoreBadgeEl = document.getElementById("seoModalScoreBadge");
   const pitchTitleEl = document.getElementById("seoModalPitchTitle");
   const pitchDescEl = document.getElementById("seoModalPitchDesc");
+  const hookBannerEl = document.getElementById("seoModalHookBanner");
+  const hookTextEl = document.getElementById("seoModalHookText");
   const checksContainerEl = document.getElementById("seoModalChecksContainer");
 
-  const score = report.opportunity_score !== null && report.opportunity_score !== undefined
-    ? report.opportunity_score
-    : "N/A";
+  const healthScore = report.seo_health_score !== null && report.seo_health_score !== undefined
+    ? report.seo_health_score
+    : (report.opportunity_score !== null && report.opportunity_score !== undefined ? 100 - report.opportunity_score : null);
+
+  const pitchPriority = report.lead_pitch_priority || "Moderate";
+  const icebreakerHook = report.icebreaker_hook || "";
 
   let badgeColor = "bg-surface-container text-secondary border-surface-container-high";
-  if (typeof score === "number") {
-    if (score >= 70) badgeColor = "bg-emerald-100 text-emerald-900 border-emerald-300";
-    else if (score >= 40) badgeColor = "bg-amber-100 text-amber-900 border-amber-300";
+  if (typeof healthScore === "number") {
+    if (healthScore >= 80) badgeColor = "bg-emerald-100 text-emerald-900 border-emerald-300";
+    else if (healthScore >= 50) badgeColor = "bg-amber-100 text-amber-900 border-amber-300";
     else badgeColor = "bg-rose-100 text-rose-900 border-rose-300";
   }
 
   if (scoreBadgeEl) {
-    scoreBadgeEl.innerText = `Opportunity Score: ${score}/100`;
+    scoreBadgeEl.innerText = healthScore !== null ? `SEO Health: ${healthScore}/100` : "Audit Complete";
     scoreBadgeEl.className = `px-2.5 py-0.5 rounded-full text-xs font-bold font-label border ${badgeColor}`;
   }
 
   if (pitchTitleEl) {
-    pitchTitleEl.innerText = report.client_pitch_angle || "Local SEO Opportunity Summary";
+    pitchTitleEl.innerText = `Outreach Priority: ${pitchPriority}`;
   }
+
+  // Icebreaker hook display
+  if (hookBannerEl && hookTextEl) {
+    if (icebreakerHook) {
+      hookTextEl.innerText = `"${icebreakerHook}"`;
+      hookBannerEl.classList.remove("hidden");
+    } else {
+      hookBannerEl.classList.add("hidden");
+    }
+  }
+
+  // Handle issues as either Array or Dict of AuditIssue objects
+  const rawIssues = report.issues || {};
+  const issues = Array.isArray(rawIssues) ? rawIssues : Object.values(rawIssues);
+  const passedCount = issues.filter(iss => iss.audit_status === "Pass").length;
+  const issueCount = issues.filter(iss => iss.audit_status === "Warning" || iss.audit_status === "Fail").length;
+
   if (pitchDescEl) {
-    pitchDescEl.innerText = `Audit Status: ${report.status} | Total Issues: ${(report.issues || []).length} | Verified Checks: ${report.verified_checks_count || 0}/11`;
+    const ttfb = report.server_response_ttfb || (report.load_time_seconds ? `TTFB: ${report.load_time_seconds}s` : "HTML Socket Only");
+    const words = report.word_count ? ` | Words: ${report.word_count}` : "";
+    pitchDescEl.innerText = `${ttfb} | Passed: ${passedCount}/${issues.length} | Actionable Signals: ${issueCount}${words}`;
   }
 
   if (checksContainerEl) {
-    const issues = report.issues || [];
     if (issues.length === 0) {
       checksContainerEl.innerHTML = `
-        <div class="p-4 rounded-xl bg-emerald-50 border border-emerald-200 text-emerald-800 text-xs">
-          <p class="font-bold flex items-center gap-1.5 mb-1">
-            <span class="material-symbols-outlined text-[16px]">check_circle</span>
-            All 11 on-page Local SEO checks passed cleanly!
-          </p>
-          <p>No major technical or on-page Local SEO issues were detected on the homepage.</p>
+        <div class="p-4 rounded-xl bg-surface-container border border-surface-container-high text-secondary text-xs text-center">
+          <p>No audit details available for this website.</p>
         </div>
       `;
       return;
     }
 
     checksContainerEl.innerHTML = issues.map(iss => {
+      const status = iss.audit_status || "Pass";
+      const isPass = status === "Pass";
+      const isWarn = status === "Warning";
+      const isFail = status === "Fail";
+
+      let statusIcon = "check_circle";
+      let statusColor = "text-emerald-600";
+      if (isWarn) {
+        statusIcon = "warning";
+        statusColor = "text-amber-600";
+      } else if (isFail) {
+        statusIcon = "cancel";
+        statusColor = "text-rose-600";
+      } else if (status === "Unverified") {
+        statusIcon = "help";
+        statusColor = "text-secondary";
+      }
+
       let prioClass = "bg-surface-container text-secondary border-surface-container-high";
-      if (iss.priority === "critical") prioClass = "bg-rose-100 text-rose-900 border-rose-300";
-      else if (iss.priority === "high") prioClass = "bg-amber-100 text-amber-900 border-amber-300";
-      else if (iss.priority === "medium") prioClass = "bg-blue-100 text-blue-900 border-blue-300";
+      const prio = (iss.priority || "none").toLowerCase();
+      if (prio === "high" || prio === "critical") prioClass = "bg-rose-100 text-rose-900 border-rose-300";
+      else if (prio === "medium") prioClass = "bg-amber-100 text-amber-900 border-amber-300";
+      else if (prio === "low") prioClass = "bg-blue-100 text-blue-900 border-blue-300";
+
+      const finding = iss.evidence || iss.finding || iss.xlsx_summary || "";
+      const recommendation = iss.recommended_fix || iss.recommendation || "";
 
       return `
         <div class="p-3 rounded-xl bg-surface-container-low border border-surface-container-high/60 flex flex-col gap-1 text-xs">
           <div class="flex items-center justify-between gap-2">
             <div class="flex items-center gap-1.5 font-bold text-on-surface">
-              <span class="material-symbols-outlined text-[16px] ${iss.passed ? "text-emerald-600" : "text-amber-600"}">
-                ${iss.passed ? "check_circle" : "warning"}
+              <span class="material-symbols-outlined text-[16px] ${statusColor}">
+                ${statusIcon}
               </span>
-              <span>${escapeHtml(iss.check_name)}</span>
+              <span>${escapeHtml(iss.check_name || "Check")}</span>
             </div>
-            <span class="px-2 py-0.5 rounded text-[10px] font-bold uppercase tracking-wider border ${prioClass}">
-              ${escapeHtml(iss.priority)}
-            </span>
+            <div class="flex items-center gap-1.5">
+              <span class="px-2 py-0.5 rounded text-[10px] font-semibold border ${isPass ? 'bg-emerald-50 text-emerald-800 border-emerald-200' : (isWarn ? 'bg-amber-50 text-amber-800 border-amber-200' : 'bg-rose-50 text-rose-800 border-rose-200')}">
+                ${status}
+              </span>
+              ${(iss.priority && iss.priority !== "None") ? `
+                <span class="px-2 py-0.5 rounded text-[10px] font-bold uppercase tracking-wider border ${prioClass}">
+                  ${escapeHtml(iss.priority)}
+                </span>
+              ` : ""}
+            </div>
           </div>
-          <p class="text-secondary text-[11px] pl-5">${escapeHtml(iss.finding)}</p>
-          ${iss.recommendation ? `
-            <div class="mt-1 pl-5 text-[11px] text-primary bg-primary/5 p-1.5 rounded-lg border border-primary/10">
-              <span class="font-semibold">Fix:</span> ${escapeHtml(iss.recommendation)}
+          ${finding ? `<p class="text-secondary text-[11px] pl-5 leading-relaxed">${escapeHtml(finding)}</p>` : ""}
+          ${recommendation ? `
+            <div class="mt-1 pl-5 text-[11px] text-primary bg-primary/5 p-2 rounded-lg border border-primary/10">
+              <span class="font-semibold">Recommended Fix:</span> ${escapeHtml(recommendation)}
+            </div>
+          ` : ""}
+        </div>
+      `;
+    }).join("");
+  }
+}
+            <div class="mt-1 pl-5 text-[11px] text-primary bg-primary/5 p-2 rounded-lg border border-primary/10">
+              <span class="font-semibold">Recommended Fix:</span> ${escapeHtml(recommendation)}
             </div>
           ` : ""}
         </div>

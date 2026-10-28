@@ -351,7 +351,7 @@
                 </label>
 
                 <!-- Page SEO Audit Toggle Chip (Default Off) -->
-                <label class="inline-flex items-center gap-2 px-3 py-1.5 rounded-lg bg-surface-container hover:bg-surface-container-high transition-colors text-xs font-label text-on-surface cursor-pointer select-none border border-transparent hover:border-surface-container-highest" title="Audit 11 on-page Local SEO signals (Speed, Mobile, Schema, NAP, Meta, H1) and compute Opportunity Score (0-100) for websites.">
+                <label id="pageSeoAuditWrapper" class="inline-flex items-center gap-2 px-3 py-1.5 rounded-lg bg-surface-container hover:bg-surface-container-high transition-colors text-xs font-label text-on-surface cursor-pointer select-none border border-transparent hover:border-surface-container-highest" title="Audit 11 on-page Local SEO signals (Speed, Mobile, Schema, NAP, Meta, H1) and compute Opportunity Score (0-100) for websites.">
                   <input type="checkbox" id="pageSeoAuditToggle" class="w-3.5 h-3.5 text-primary rounded border-outline-variant focus:ring-primary focus:ring-1 cursor-pointer">
                   <span class="flex items-center gap-1 font-medium">
                     <span class="material-symbols-outlined text-[15px] text-amber-600">troubleshoot</span>
@@ -1493,6 +1493,21 @@
           <span class="font-semibold text-on-surface block" id="seoModalPitchTitle">Local SEO Pitch Angle</span>
           <span class="text-secondary" id="seoModalPitchDesc">Analyzing on-page signals, schema, and Local Pack consistency...</span>
         </div>
+      </div>
+
+      <!-- Cold Email Outreach Icebreaker Hook Banner -->
+      <div id="seoModalHookBanner" class="hidden p-3.5 rounded-xl bg-primary/10 border border-primary/20 text-xs font-body flex flex-col gap-2">
+        <div class="flex items-center justify-between">
+          <span class="font-bold text-primary flex items-center gap-1.5">
+            <span class="material-symbols-outlined text-[16px]">mail</span>
+            <span>Personalized Cold Outreach Hook (Buyer-Ready)</span>
+          </span>
+          <button type="button" id="copySeoHookBtn" onclick="copySeoHookText()" class="px-2.5 py-1 rounded-lg bg-primary text-on-primary hover:bg-primary/90 font-semibold text-[11px] flex items-center gap-1 shadow-2xs transition-all cursor-pointer">
+            <span class="material-symbols-outlined text-[13px]">content_copy</span>
+            <span id="copySeoHookText">Copy Hook</span>
+          </button>
+        </div>
+        <p id="seoModalHookText" class="text-on-surface font-medium italic pl-1 leading-relaxed"></p>
       </div>
 
       <!-- 11 Checks List -->

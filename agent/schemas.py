@@ -2,7 +2,7 @@
 Pydantic Data Models for Autonomous AI Google Maps Lead Generation Agent.
 """
 
-from typing import List, Optional, Literal
+from typing import List, Optional, Literal, Dict, Any
 from pydantic import BaseModel, Field
 
 
@@ -38,6 +38,7 @@ class EnrichmentConfig(BaseModel):
     extract_emails: bool = Field(default=False, description="Scrape emails from business website")
     extract_socials: bool = Field(default=False, description="Scrape Facebook, Instagram, LinkedIn, WhatsApp links")
     detect_cms: bool = Field(default=False, description="Detect CMS platform (WordPress, Shopify, Wix)")
+    audit_seo: bool = Field(default=False, description="Run 11-point Local SEO audit during website enrichment")
 
 
 class ActionPlan(BaseModel):
@@ -89,3 +90,4 @@ class LeadItem(BaseModel):
     order_link: Optional[str] = Field(default=None, description="Online ordering or reservation link")
     google_maps_url: Optional[str] = Field(default=None, description="Direct Google Maps URL")
     source_query: Optional[str] = Field(default=None, description="Search query that found this lead")
+    seo_report: Optional[Dict[str, Any]] = Field(default=None, description="Serialized SEOReport data if audited")

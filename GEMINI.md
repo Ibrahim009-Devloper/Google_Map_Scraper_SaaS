@@ -60,12 +60,24 @@ gmaps-ai-lead-agent/
 │   ├── web_enricher.py        # BS4 + Regex দিয়ে ওয়েবসাইট থেকে ইমেইল ও সোশ্যাল স্ক্র্যাপার
 │   └── pipeline.py            # অর্কেস্ট্রেটর (Stop Flag চেক, ডিডুপ্লিকেশন ও ব্যাচ কলব্যাক)
 │
-├── backend/                   # PART B: SECURE FASTAPI & DATABASE ENGINE
+├── backend/                   # PART B: SECURE FASTAPI, DATABASE ENGINE & SEO AUDITOR
 │   ├── __init__.py
 │   ├── main.py                # FastAPI App, CORS, Rate Limiter, এবং API Routes
 │   ├── security.py            # Google OAuth Token Verifier, Temp-Mail Blocker, IP Quota Tracker
 │   ├── temp_store.py          # Local SQLite (WAL mode) Temp Buffer (কাজ চলাকালীন জিরো ডেটা লস ও অ্যানোনিমাস ক্যাশ)
-│   └── supabase_db.py         # Supabase Client (শুধুমাত্র লগইন ইউজারদের লিড ও পাবলিক রিভিউ সেভ করার জন্য)
+│   ├── supabase_db.py         # Supabase Client (শুধুমাত্র লগইন ইউজারদের লিড ও পাবলিক রিভিউ সেভ করার জন্য)
+│   ├── excel_exporter.py      # Base 21-column Executive Leads Spreadsheet Generator
+│   └── seo_audit/             # Professional Local SEO & Technical Audit Engine (21 Standard Columns)
+│       ├── __init__.py
+│       ├── config.py          # TLD Whitelists, Weights, Terminology Templates
+│       ├── models.py          # Strict Pydantic Models for Technical & Local SEO Signals
+│       ├── fetcher.py         # Redirect Follower (max 5 hops), TTFB Timer & Fallback
+│       ├── analyzer.py        # 14 Senior SEO Checks with Evidence & Impact
+│       ├── scorer.py          # SEO Health Score (0-100) & Lead Pitch Priority
+│       ├── icebreaker.py      # Automated Dynamic Cold Outreach Icebreaker Generator
+│       ├── auditor.py         # Domain Cache Deduplicator & Concurrency Orchestrator
+│       ├── routes.py          # FastAPI Endpoints: /api/seo-audit & /api/seo-audit/bulk
+│       └── xlsx_appender.py   # 21-Column Agency-Grade Local SEO Excel Appender
 │
 ├── cli_test.py                # লোকাল টার্মিনাল থেকে কোর এজেন্ট টেস্ট করার স্ক্রিপ্ট
 └── data/                      # লোকাল `temp_cache.db` (SQLite) ও এক্সপোর্ট ফাইল থাকার ফোল্ডার (Auto-cleaned)
@@ -404,61 +416,75 @@ CREATE TABLE product_reviews (
 
 ---
 
-## 9. On-Demand Local SEO Audit Engine Specification (`seo_audit/`)
+## 9. Professional Agency-Grade Local SEO & Technical Audit Engine (`backend/seo_audit/`)
 
-### 9.1. Architecture & Design Principles
-1. **On-Demand Only (Decoupled):** The SEO audit module never runs automatically during initial Google Maps scraping. It executes strictly when triggered via API or UI button (`Page SEO`).
-2. **Zero Browser Automation:** Pure HTTP requests using `curl_cffi` (`impersonate="chrome124"`) and `BeautifulSoup4` for minimal RAM footprint on cloud hosts like Render.
-3. **Non-Blocking & Fault-Tolerant:** Each business audit is wrapped in a per-business `try...except` block with structured logging. A single broken or timing-out website never crashes the batch or API stream.
-4. **Verified-Only Scoring Law:** If input data is missing (e.g. Google Maps lead lacks phone or city), the check is marked `Unverified` and its weight is completely excluded from the denominator. Never penalize unverified checks.
-5. **Preserve Existing XLSX Columns:** When exporting to Excel, all existing columns and cell values are preserved in their exact order, and 9 standardized SEO columns are appended to the far right.
+### 9.1. Role & Architectural Objectives
+Act as a Senior Technical SEO Architect & Lead Generation Engineer. The engine transforms raw scraper data into an agency-grade, buyer-ready Local SEO Audit Report suitable for direct client presentation and cold outreach pitching.
 
-### 9.2. File Layout
-```text
-seo_audit/
-├── __init__.py           # Package exports (models, config)
-├── config.py             # SEO_AUDIT_TIMEOUT (12s), MAX_RETRIES (2), weights, thresholds
-├── models.py             # Pydantic schemas: AuditIssue, AuditStatus, Priority, SEOReport, AuditInput
-├── fetcher.py            # Fault-tolerant curl_cffi fetcher with response timing and SSL fallback
-├── analyzer.py           # 11 Local SEO Check implementations (Speed, Viewport, Title, Meta, H1, Canonical, Robots, Alt, Keywords, NAP, Schema)
-├── scorer.py             # Verified-only Opportunity Score (0–100) formula
-├── auditor.py            # Main Orchestrator with per-business error isolation and thread pooling
-├── routes.py             # FastAPI Endpoints: POST /api/seo-audit and POST /api/seo-audit/bulk
-└── xlsx_appender.py      # Non-destructive XLSX column appender preserving existing cols
-```
+### 9.2. Critical Logic Upgrades & Bug Fixes
+1. **Email Extraction Sanitization (Fix Garbage Emails):**
+   - Strict IANA/approved TLD whitelist verification (.com, .net, .org, .us, .co, .io, .dental, .care, .agency, .tech, etc.).
+   - Explicit rejection of prose English words as TLDs (e.g., `they`, `the`, `our`, `book`, `home`, `ease`, `day`, `way`, `page`, `post`, `time`, `work`).
+   - Trailing punctuation and post-TLD text stripped clean.
+   - Ignore asset filenames (`image@2x.png`, `logo@3x.webp`) and placeholder/sentry emails (`sentry.io`, `wixpress.com`, `example.com`).
+2. **Decouple SSL Security from Website Speed:**
+   - Dedicated column: `SSL & HTTPS Redirect Status` (e.g., `Pass: Valid SSL & Enforced HTTPS` or `Critical: Unencrypted HTTP (Missing 301 Redirect to HTTPS)`).
+   - Dedicated column: `Server Response (TTFB)` (e.g., `TTFB: 0.12s (Fast Server Response - HTML Only)`). Server latency is never masked or overwritten by protocol issues.
+3. **Follow Redirect Chains & Deduplicate Domain Audits:**
+   - HTTP client follows redirects (`allow_redirects=True`, up to 5 hops).
+   - Records initial vs. final redirect status (e.g., `301 -> 200 OK (HTTPS)`).
+   - Caches audit results by normalized root domain in `backend/seo_audit/auditor.py` so multiple GBP practitioner listings sharing one domain receive identical, non-conflicting metrics.
+4. **Honest Speed Metrics (TTFB):**
+   - Labeled honestly as `Server Response (TTFB)` in seconds.
+5. **Clarify Scoring Direction (SEO Health Score vs Lead Pitch Priority):**
+   - `SEO Health Score (0–100)`: Higher = Better website quality (100 - sum of penalties).
+   - `Lead Pitch Priority`: Categorical rating for agency cold outreach:
+     - `Critical Pitch`: Health score < 50, No Website, unencrypted HTTP, or noindex tag.
+     - `High Value`: Health score 50–69 (Major technical or local SEO gaps).
+     - `Moderate`: Health score 70–84 (Basic gaps like schema, NAP or title length).
+     - `Low Priority - Well Optimized`: Health score 85–100.
 
-### 9.3. Check Weights & Opportunity Score Formula
-```python
-SEO_CHECK_WEIGHTS = {
-    "website_speed": 12,          # HTTP Status, SSL & Load Time
-    "mobile_friendly": 12,        # Viewport & Mobile Usability
-    "title_tag": 10,              # Title presence & length
-    "meta_description": 6,        # Meta description presence & length
-    "h1_status": 10,              # Single descriptive H1
-    "canonical_robots": 8,        # Canonical & Indexability (If 'noindex' -> min score 85)
-    "image_alt": 4,               # Image Alt Text coverage
-    "local_keywords": 12,         # City + Category in Title/H1
-    "nap_consistency": 12,        # Name, Address, Phone match
-    "schema_markup": 10,          # JSON-LD LocalBusiness Schema
-    "contact_maps_embed": 4       # Clickable tel: link & Google Map iframe
-}
-```
-Formula:
-$$\text{SEO Opportunity Score} = \text{round}\left( \frac{\sum \text{opportunity\_points of verified checks}}{\sum \text{weight of verified checks}} \times 100 \right)$$
-- `Pass` = 0.0 * weight
-- `Warning` = 0.5 * weight
-- `Fail` = 1.0 * weight
-- `Unverified` = excluded from denominator
-- If `verified_weight_sum == 0`, score is `None` (rendered as `"N/A"` or `"Unverified"`).
-- If `noindex` is detected, score is enforced as `max(score, 85)`.
+### 9.3. Complete 21-Column Agency-Grade Output Specification
+A. Technical Foundation & Crawlability:
+1. `Final URL & HTTP Status`: e.g., `200 OK (HTTPS)` or `301 -> 200 OK (HTTPS)` or `Warning: HTTP 200 (No SSL Redirect)`
+2. `SSL & HTTPS Redirect Status`: e.g., `Pass: Valid SSL & Enforced HTTPS` or `Critical: Unencrypted HTTP (Missing 301 Redirect to HTTPS)`
+3. `Server Response (TTFB)`: e.g., `TTFB: 0.12s (Fast Server Response - HTML Only)`
+4. `Indexability (Meta Robots)`: `Pass: Indexable` vs `Critical: noindex Tag Present`
+5. `Canonical Tag Status`: `Pass: Self-Referencing`, `Warning: Missing Canonical`, or `Critical: Points to Different Domain`
+6. `Robots.txt & XML Sitemap`: `Pass: Both Found` or `Warning: Sitemap Missing`
 
-### 9.4. Standard Appended XLSX Columns
-1. `Website Speed`
-2. `Mobile Friendly`
-3. `Title Tag Status`
-4. `Meta Description Status`
-5. `H1 Status`
-6. `Local Keyword Status`
-7. `Schema Status`
-8. `NAP Status`
-9. `SEO Opportunity Score`
+B. Raw Evidence Extraction:
+7. `Extracted Title Text`: Exact `<title>` string
+8. `Title Tag Status`: e.g., `High Issue: 11 chars ("Paya Dental") - Missing Keyword & City` or `Warning: 67 chars (SERP Truncation Risk > 60 chars)`
+9. `Meta Description Status`: e.g., `High Issue: Missing <meta name="description"> (Hurts Organic CTR)` or `Minor: 231 chars (Truncated in SERP; Optimal: 120-158 chars)`
+10. `Extracted Primary H1`: Exact text of first `<h1>`
+11. `H1 Tag Status`: e.g., `Critical On-Page: No <h1> Tag Found on Homepage` or `Warning: Multiple H1 Tags (3 Found: "Welcome...") - Dilutes Hierarchy`
+12. `Homepage Word Count`: e.g., `Pass: 540 words` vs `Thin Content [High]: 180 words (< 300 words)`
+13. `Image Alt Text Gap`: Format as `Missing Alt: X of Y images (Z%)`
+
+C. Local SEO Signals:
+14. `Local Keyword Status`: e.g., `Local Gap: Target City ("Miami") Missing from Title & H1`
+15. `Schema Status`: e.g., `Incomplete JSON-LD: Found [WebPage], Missing [Dentist/LocalBusiness]`
+16. `NAP Status`: e.g., `Critical Local Signal: GBP Phone & Street Address Missing in HTML`
+17. `Google Maps Embed`: `Pass: Map Embedded` vs `Missing Map Embed [Low]`
+18. `GBP Category Alignment`: Comparison of Google Maps category against Title and H1
+
+D. Scoring & Outreach:
+19. `SEO Health Score`: 0–100 integer (100 = flawless)
+20. `Lead Pitch Priority`: Categorical label (Critical Pitch, High Value, Moderate, Low Priority - Well Optimized)
+21. `AI / Dynamic Icebreaker Hook`: 1-sentence personalized cold outreach opener based on the #1 highest-priority flaw.
+
+### 9.4. Standard SEO Terminology Rewrite Guide (Severity + Evidence + Impact)
+- Every audit finding cell outputs standardized professional language:
+  - `Critical: ...` (Security, indexing, or total omission)
+  - `High Issue: ...` (Direct ranking or CTR loss)
+  - `Warning: ...` (Hierarchy dilution or truncation risk)
+  - `Pass: ...` (Clean positive confirmation)
+
+### 9.5. Dynamic Icebreaker Hook Generation Rules
+- **Rule 1 (No SSL):** *"Noticed {Business Name} ranks on Google Maps with {Rating} stars, but your website loads on unencrypted HTTP without an SSL redirect, which triggers browser security warnings for visitors."*
+- **Rule 2 (Missing H1 / Short Title):** *"Saw {Business Name}'s strong presence in {City}, though your homepage title tag is currently just '{Extracted Title}' and is missing '{Category} in {City}', costing you local organic traffic."*
+- **Rule 3 (Missing LocalBusiness Schema / NAP):** *"While checking {Business Name}'s site, I noticed your street address and {Category} JSON-LD schema are missing from the homepage code, making it harder for Google to verify your local entity."*
+- **Rule 4 (No Website):** *"Noticed {Business Name} has a strong Google Maps profile with {Rating} stars in {City}, but no active website, meaning high-intent local searchers cannot view your services or book online."*
+- **Rule 5 (Thin Content):** *"Noticed your homepage contains only {Word Count} words, which search engines often flag as thin content, hurting your local pack rankings."*
+- **Rule 6 (Default):** *"Audited {Business Name}'s online presence in {City} and identified several high-ROI technical optimizations to improve your Google Local Pack rankings."*

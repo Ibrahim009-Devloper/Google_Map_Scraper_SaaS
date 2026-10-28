@@ -34,6 +34,7 @@ CREATE TABLE IF NOT EXISTS active_jobs (
     user_email TEXT,
     prompt TEXT NOT NULL,
     scrape_website INTEGER DEFAULT 0,
+    audit_seo INTEGER DEFAULT 0,
     status TEXT DEFAULT 'running',
     current_area TEXT DEFAULT 'Initializing AI Planner...',
     leads_count INTEGER DEFAULT 0,
@@ -87,6 +88,7 @@ def init_db_sync() -> None:
         existing_cols = {row[1] for row in conn.execute("PRAGMA table_info(active_jobs);").fetchall()}
         needed_active_jobs_cols = [
             ("scrape_website", "INTEGER DEFAULT 0"),
+            ("audit_seo", "INTEGER DEFAULT 0"),
             ("user_email", "TEXT"),
             ("target_leads", "INTEGER DEFAULT 100"),
             ("duration_seconds", "REAL DEFAULT 0.0"),
@@ -125,6 +127,7 @@ async def init_db() -> None:
             
         needed_active_jobs_cols = [
             ("scrape_website", "INTEGER DEFAULT 0"),
+            ("audit_seo", "INTEGER DEFAULT 0"),
             ("user_email", "TEXT"),
             ("target_leads", "INTEGER DEFAULT 100"),
             ("duration_seconds", "REAL DEFAULT 0.0"),
@@ -278,6 +281,7 @@ def create_job_sync(
     is_authenticated: bool,
     prompt: str,
     scrape_website: bool = False,
+    audit_seo: bool = False,
     user_email: Optional[str] = None,
     target_leads: int = 100,
 ) -> Dict[str, Any]:
@@ -287,12 +291,12 @@ def create_job_sync(
         cursor.execute(
             """
             INSERT OR REPLACE INTO active_jobs (
-                job_id, session_owner, is_authenticated, user_email, prompt, scrape_website,
+                job_id, session_owner, is_authenticated, user_email, prompt, scrape_website, audit_seo,
                 status, current_area, leads_count, target_leads, duration_seconds, started_at, created_at
             )
-            VALUES (?, ?, ?, ?, ?, ?, 'running', 'Initializing AI Planner...', 0, ?, 0.0, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+            VALUES (?, ?, ?, ?, ?, ?, ?, 'running', 'Initializing AI Planner...', 0, ?, 0.0, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
             """,
-            (job_id, session_owner, 1 if is_authenticated else 0, user_email, prompt, 1 if scrape_website else 0, target_leads),
+            (job_id, session_owner, 1 if is_authenticated else 0, user_email, prompt, 1 if scrape_website else 0, 1 if audit_seo else 0, target_leads),
         )
         conn.commit()
     return {
@@ -302,6 +306,7 @@ def create_job_sync(
         "user_email": user_email,
         "prompt": prompt,
         "scrape_website": 1 if scrape_website else 0,
+        "audit_seo": 1 if audit_seo else 0,
         "status": "running",
         "current_area": "Initializing AI Planner...",
         "leads_count": 0,
@@ -315,6 +320,7 @@ async def create_job(
     is_authenticated: bool,
     prompt: str,
     scrape_website: bool = False,
+    audit_seo: bool = False,
     user_email: Optional[str] = None,
     target_leads: int = 100,
 ) -> Dict[str, Any]:
@@ -323,12 +329,12 @@ async def create_job(
         await db.execute(
             """
             INSERT OR REPLACE INTO active_jobs (
-                job_id, session_owner, is_authenticated, user_email, prompt, scrape_website,
+                job_id, session_owner, is_authenticated, user_email, prompt, scrape_website, audit_seo,
                 status, current_area, leads_count, target_leads, duration_seconds, started_at, created_at
             )
-            VALUES (?, ?, ?, ?, ?, ?, 'running', 'Initializing AI Planner...', 0, ?, 0.0, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+            VALUES (?, ?, ?, ?, ?, ?, ?, 'running', 'Initializing AI Planner...', 0, ?, 0.0, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
             """,
-            (job_id, session_owner, 1 if is_authenticated else 0, user_email, prompt, 1 if scrape_website else 0, target_leads),
+            (job_id, session_owner, 1 if is_authenticated else 0, user_email, prompt, 1 if scrape_website else 0, 1 if audit_seo else 0, target_leads),
         )
         await db.commit()
     return {
@@ -338,6 +344,7 @@ async def create_job(
         "user_email": user_email,
         "prompt": prompt,
         "scrape_website": 1 if scrape_website else 0,
+        "audit_seo": 1 if audit_seo else 0,
         "status": "running",
         "current_area": "Initializing AI Planner...",
         "leads_count": 0,

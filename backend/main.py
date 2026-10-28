@@ -40,8 +40,8 @@ from backend import temp_store
 from backend import security
 from backend import supabase_db
 from backend.excel_exporter import generate_leads_excel
-from seo_audit.routes import router as seo_router
-from seo_audit.xlsx_appender import append_seo_columns_to_excel
+from backend.seo_audit.routes import router as seo_router
+from backend.seo_audit.xlsx_appender import append_seo_columns_to_excel
 
 
 
@@ -492,18 +492,25 @@ async def start_scraping_job(
         if target_to_use and target_to_use > 0:
             action_plan.target_leads = target_to_use
 
-        # Respect user website scraping toggle (defaults to False: Google Maps only)
-        if not payload.scrape_website:
+        # Auto-detect SEO audit intent from prompt, LLM plan, or UI toggle
+        prompt_lower = payload.prompt.lower()
+        has_seo_intent = any(w in prompt_lower for w in ("seo", "audit", "local seo", "page seo", "site audit"))
+        should_audit_seo = bool(payload.audit_seo or has_seo_intent or getattr(action_plan.enrichment, "audit_seo", False))
+        should_scrape_web = bool(payload.scrape_website or should_audit_seo or action_plan.enrichment.enabled)
+
+        if not should_scrape_web:
             action_plan.enrichment.enabled = False
             action_plan.enrichment.extract_emails = False
             action_plan.enrichment.extract_socials = False
             action_plan.enrichment.detect_cms = False
+            action_plan.enrichment.audit_seo = False
             action_plan.filters.must_have_email = False
         else:
             action_plan.enrichment.enabled = True
             action_plan.enrichment.extract_emails = True
             action_plan.enrichment.extract_socials = True
             action_plan.enrichment.detect_cms = True
+            action_plan.enrichment.audit_seo = should_audit_seo
             action_plan.filters.must_have_email = bool(payload.must_have_email)
     except Exception as plan_err:
         raise HTTPException(
@@ -520,7 +527,8 @@ async def start_scraping_job(
         session_owner=session_owner,
         is_authenticated=is_authenticated,
         prompt=payload.prompt,
-        scrape_website=payload.scrape_website,
+        scrape_website=should_scrape_web,
+        audit_seo=should_audit_seo,
         user_email=user_email,
         target_leads=action_plan.target_leads or 100,
     )
@@ -561,51 +569,6 @@ async def start_scraping_job(
                 max_leads_limit=limit,
                 export_files=True,
             )
-
-            # Optional: On-Demand Local SEO Audit for Website Leads if requested by user
-            if payload.audit_seo and result.get("leads"):
-                try:
-                    await temp_store.add_job_log(job_id, "Executing on-demand Local SEO audits for website leads...", "SEO")
-                    from seo_audit.auditor import bulk_audit_businesses
-                    from seo_audit.models import AuditInput
-                    from seo_audit.xlsx_appender import append_seo_audit_columns_to_workbook
-                    import os
-
-                    website_leads = [
-                        l for l in result["leads"]
-                        if getattr(l, "website_status", "") == "Has Own Website" and getattr(l, "website_url", None)
-                    ]
-
-                    if website_leads:
-                        audit_inputs = [
-                            AuditInput(
-                                url=l.website_url,
-                                business_name=l.name,
-                                target_city=l.neighborhood or "",
-                                claimed_phone=l.phone_local or l.phone_intl or ""
-                            )
-                            for l in website_leads
-                        ]
-                        reports = await asyncio.to_thread(bulk_audit_businesses, audit_inputs, max_workers=5)
-                        reports_by_url = {r.url: r for r in reports}
-
-                        # Attach reports to leads and persist
-                        for lead in result["leads"]:
-                            if lead.website_url and lead.website_url in reports_by_url:
-                                rep = reports_by_url[lead.website_url]
-                                setattr(lead, "seo_report", rep)
-
-                        await temp_store.save_temp_leads_batch(job_id, result["leads"])
-
-                        # Append to XLSX export if available
-                        xlsx_file = f"data/exports/{job_id}.xlsx"
-                        if os.path.exists(xlsx_file):
-                            await asyncio.to_thread(append_seo_audit_columns_to_workbook, xlsx_file, reports_by_url)
-
-                        await temp_store.add_job_log(job_id, f"Completed Local SEO audit for {len(reports)} websites.", "SEO")
-                except Exception as seo_err:
-                    print(f"[SEO Audit Error] Job {job_id}: {seo_err}", flush=True)
-                    await temp_store.add_job_log(job_id, f"Local SEO audit notice: {str(seo_err)}", "WARN")
 
             # Record usage and update job in Supabase
             if is_authenticated and user_id:
@@ -834,10 +797,25 @@ async def download_scraped_leads(
     )
     include_enrichment = is_job_enrichment or has_data_enrichment
 
+    is_job_seo = bool(job and job.get("audit_seo"))
+    has_seo = include_seo or is_job_seo or any(bool(getattr(l, "seo_report", None)) for l in leads)
+
     if format == "xlsx":
         excel_bytes = generate_leads_excel(leads, title=f"Job {job_id}", include_enrichment=include_enrichment)
-        if include_seo:
-            excel_bytes = append_seo_columns_to_excel(excel_bytes, {})
+        seo_reports = {}
+        for l in leads:
+            rep = getattr(l, "seo_report", None)
+            if rep:
+                try:
+                    from backend.seo_audit.models import SEOReport
+                    if isinstance(rep, dict):
+                        seo_reports[l.place_id] = SEOReport(**rep)
+                    elif isinstance(rep, SEOReport):
+                        seo_reports[l.place_id] = rep
+                except Exception:
+                    pass
+        if include_seo or is_job_seo or len(seo_reports) > 0:
+            excel_bytes = append_seo_columns_to_excel(excel_bytes, seo_reports)
         return Response(
             content=excel_bytes,
             media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
@@ -859,6 +837,8 @@ async def download_scraped_leads(
     ]
     if include_enrichment:
         fieldnames.extend(["facebook", "instagram", "linkedin", "whatsapp", "emails", "cms_tech"])
+    if has_seo:
+        fieldnames.extend(["seo_health_score", "lead_pitch_priority", "icebreaker_hook"])
     fieldnames.extend([
         "rating", "reviews_count", "price_range", "is_unclaimed_business",
         "neighborhood", "address", "latitude", "longitude", "order_link",
@@ -900,6 +880,22 @@ async def download_scraped_leads(
                 "emails": "; ".join(lead.emails) if lead.emails else "",
                 "cms_tech": lead.cms_tech or "",
             })
+        if has_seo:
+            rep = getattr(lead, "seo_report", None)
+            if isinstance(rep, dict):
+                h_score = rep.get("seo_health_score")
+                row["seo_health_score"] = f"{h_score}/100" if h_score is not None else "N/A"
+                row["lead_pitch_priority"] = rep.get("lead_pitch_priority", "")
+                row["icebreaker_hook"] = rep.get("icebreaker_hook", "")
+            elif rep is not None:
+                h_score = getattr(rep, "seo_health_score", None)
+                row["seo_health_score"] = f"{h_score}/100" if h_score is not None else "N/A"
+                row["lead_pitch_priority"] = getattr(rep, "lead_pitch_priority", "")
+                row["icebreaker_hook"] = getattr(rep, "icebreaker_hook", "")
+            else:
+                row["seo_health_score"] = "N/A"
+                row["lead_pitch_priority"] = ""
+                row["icebreaker_hook"] = ""
         writer.writerow(row)
 
     csv_content = output.getvalue()

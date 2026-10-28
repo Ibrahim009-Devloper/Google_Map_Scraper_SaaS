@@ -41,8 +41,9 @@ RULES:
    - Set "website_requirement": "no_website" if the user wants leads without websites (or businesses that only have Facebook/Instagram pages).
    - Set "website_requirement": "has_real_website" if the user explicitly asks for businesses with real websites.
    - Set "website_requirement": "any" if the user wants all leads regardless of website status.
-5. WEBSITE ENRICHMENT (DEEP SCRAPER):
+5. WEBSITE ENRICHMENT & LOCAL SEO AUDIT:
    - Unless the user specifically asks for "no_website" (leads without websites), ALWAYS enable website enrichment by default ("enabled": true, "extract_emails": true, "extract_socials": true, "detect_cms": true) so that emails and social links are scraped from business websites.
+   - Set "audit_seo": true if the user mentions SEO, audit, website review, page score, or technical analysis. Otherwise set "audit_seo": false.
 6. RATING & REVIEWS FILTERS:
    - "min_rating": float (default 0.0). If user says e.g. "rating 3.5 to 3.99" or "above 4 star", min_rating = 3.5 (or 4.0).
    - "max_rating": float or null. If user specifies an upper rating bound (e.g. "rating 3.5 to 3.99", "under 4.0 rating"), max_rating = 3.99 (or 4.0). Otherwise null.
@@ -83,7 +84,8 @@ Output JSON Schema:
     "enabled": boolean,
     "extract_emails": boolean,
     "extract_socials": boolean,
-    "detect_cms": boolean
+    "detect_cms": boolean,
+    "audit_seo": boolean
   }
 }
 """

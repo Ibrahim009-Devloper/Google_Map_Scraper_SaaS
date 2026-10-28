@@ -1,7 +1,8 @@
 """
-Non-destructive XLSX Column Appender.
+Non-destructive XLSX Column Appender for Agency-Grade Local SEO Audits.
 Preserves 100% of existing columns and values in their exact order,
-and strictly appends the 9 standardized Local SEO audit columns to the far right.
+and strictly appends the 21 standardized Local SEO audit columns to the far right
+with matching professional agency styling.
 """
 
 import io
@@ -11,12 +12,12 @@ import openpyxl
 from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
 from openpyxl.utils import get_column_letter
 
-from seo_audit.models import SEOReport
-from seo_audit.auditor import SEO_XLSX_COLUMNS
+from backend.seo_audit.models import SEOReport
+from backend.seo_audit.config import SEO_XLSX_COLUMNS
 
 
 def normalize_domain(url: Optional[str]) -> str:
-    """Extracts lowercase netloc domain for flexible matching."""
+    """Extracts lowercase netloc domain for flexible matching without www."""
     if not url:
         return ""
     clean = url.strip().lower()
@@ -24,7 +25,10 @@ def normalize_domain(url: Optional[str]) -> str:
         clean = "https://" + clean
     try:
         parsed = urlparse(clean)
-        return parsed.netloc.replace("www.", "")
+        netloc = parsed.netloc.replace("www.", "").strip()
+        if ":" in netloc:
+            netloc = netloc.split(":")[0]
+        return netloc
     except Exception:
         return clean
 
@@ -35,9 +39,9 @@ def append_seo_columns_to_excel(
 ) -> bytes:
     """
     Takes an existing Excel spreadsheet binary, preserves all existing columns,
-    and appends the 9 Local SEO columns to the right with matching styling.
+    and appends the 21 Local SEO columns to the right with matching styling.
     
-    `seo_reports` keys can be `place_id`, `website_url`, domain, or row indices.
+    `seo_reports` keys can be `place_id`, `website_url`, root domain, or row indices.
     """
     wb = openpyxl.load_workbook(io.BytesIO(excel_bytes))
     ws = wb.active
@@ -65,6 +69,7 @@ def append_seo_columns_to_excel(
     
     body_font = Font(name="Calibri", size=10, color="1E293B")
     score_font = Font(name="Calibri", size=10, bold=True, color="094CB2")
+    pitch_font = Font(name="Calibri", size=10, bold=True, color="B91C1C")
     
     thin_border_side = Side(border_style="thin", color="E2E8F0")
     cell_border = Border(
@@ -74,7 +79,7 @@ def append_seo_columns_to_excel(
         bottom=thin_border_side
     )
 
-    # 1. Write the 9 new Headers
+    # 1. Write the 21 new Headers
     for i, col_title in enumerate(SEO_XLSX_COLUMNS):
         col_idx = orig_max_col + i + 1
         cell = ws.cell(row=1, column=col_idx, value=col_title)
@@ -109,32 +114,67 @@ def append_seo_columns_to_excel(
                 cell_value = report.xlsx_row_data.get(col_title, "Not Audited")
             else:
                 if not website_val:
-                    cell_value = "No Website" if col_title != "SEO Opportunity Score" else "N/A"
+                    if col_title == "SEO Health Score":
+                        cell_value = "N/A"
+                    elif col_title == "Lead Pitch Priority":
+                        cell_value = "Critical Pitch (No Website)"
+                    elif col_title == "AI / Dynamic Icebreaker Hook":
+                        cell_value = "Business has no website listed on Google Maps."
+                    else:
+                        cell_value = "No Website"
                 else:
                     cell_value = "Not Audited"
 
             cell = ws.cell(row=row_idx, column=col_idx, value=cell_value)
             cell.fill = row_fill
-            cell.font = score_font if col_title == "SEO Opportunity Score" else body_font
-            cell.alignment = Alignment(horizontal="center", vertical="center")
             cell.border = cell_border
 
-    # 3. Auto-adjust width for the 9 appended columns
+            # Specific column styling
+            if col_title == "SEO Health Score":
+                cell.font = score_font
+                cell.alignment = Alignment(horizontal="center", vertical="center")
+            elif col_title == "Lead Pitch Priority":
+                cell.font = pitch_font if "Critical" in str(cell_value) else body_font
+                cell.alignment = Alignment(horizontal="center", vertical="center")
+            elif col_title in ("Extracted Title Text", "Extracted Primary H1", "AI / Dynamic Icebreaker Hook"):
+                cell.font = body_font
+                cell.alignment = Alignment(horizontal="left", vertical="center", wrap_text=True)
+            else:
+                cell.font = body_font
+                cell.alignment = Alignment(horizontal="left" if len(str(cell_value)) > 25 else "center", vertical="center", wrap_text=True)
+
+    # 3. Column widths for all 21 columns
     col_widths = {
-        "Website Speed": 20,
-        "Mobile Friendly": 16,
-        "Title Tag Status": 24,
-        "Meta Description Status": 24,
-        "H1 Status": 20,
-        "Local Keyword Status": 26,
-        "Schema Status": 24,
-        "NAP Status": 24,
-        "SEO Opportunity Score": 22,
+        "Final URL & HTTP Status": 28,
+        "SSL & HTTPS Redirect Status": 32,
+        "Server Response (TTFB)": 24,
+        "Indexability (Meta Robots)": 24,
+        "Canonical Tag Status": 26,
+        "Robots.txt & XML Sitemap": 24,
+        "Extracted Title Text": 35,
+        "Title Tag Status": 32,
+        "Meta Description Status": 32,
+        "Extracted Primary H1": 35,
+        "H1 Tag Status": 32,
+        "Homepage Word Count": 22,
+        "Image Alt Text Gap": 24,
+        "Local Keyword Status": 30,
+        "Schema Status": 32,
+        "NAP Status": 32,
+        "Google Maps Embed": 24,
+        "GBP Category Alignment": 30,
+        "SEO Health Score": 18,
+        "Lead Pitch Priority": 24,
+        "AI / Dynamic Icebreaker Hook": 52,
     }
     for i, col_title in enumerate(SEO_XLSX_COLUMNS):
         col_letter = get_column_letter(orig_max_col + i + 1)
-        ws.column_dimensions[col_letter].width = col_widths.get(col_title, 20)
+        ws.column_dimensions[col_letter].width = col_widths.get(col_title, 25)
 
     output = io.BytesIO()
     wb.save(output)
     return output.getvalue()
+
+
+# Backward-compatible alias
+append_seo_audit_columns_to_workbook = append_seo_columns_to_excel

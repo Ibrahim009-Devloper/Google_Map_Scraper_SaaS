@@ -18,6 +18,7 @@ Key Features:
 
 import html
 import re
+import time
 from urllib.parse import urljoin, urlparse, unquote
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import List, Optional, Set, Tuple, Dict, Any, Callable
@@ -84,6 +85,60 @@ JUNK_USERNAMES = {
     "infosecurity", "infosecurity.alerts", "spam", "daemon", "root",
 }
 
+# Strict blacklist for social handles/URLs (builder, agency, and share dialogs)
+BLACKLISTED_SOCIAL_PATTERNS = (
+    "wix", "wixstudio", "squarespace", "wordpress", "godaddy", "webflow", "hibu", "shopify",
+    "facebook.com/sharer", "facebook.com/share.php", "instagram.com/p/"
+)
+
+# Strict email domain/prefix blacklist (builders, agencies, template defaults)
+BLACKLISTED_EMAIL_DOMAINS = {
+    "wix.com", "ndiscovered.com", "hibu.com", "godaddy.com", "squarespace.com",
+    "sentry.io", "example.com", "domain.com", "email.com", "yoursite.com"
+}
+
+# Known national brands, directory, and aggregator domains
+DIRECTORY_DOMAINS = {
+    "rheem.com", "1800dentist.com", "yelp.com", "angi.com",
+    "homeadvisor.com", "thumbtack.com", "yellowpages.com"
+}
+
+# Subpage directory listing path patterns on corporate / manufacturer domains
+DIRECTORY_PATH_PATTERNS = (
+    "/find-a-plumber", "/best-plumbers-in-", "/find-a-", "/find-an-",
+    "/contractors/", "/directory/", "/locator/", "/dealers/"
+)
+
+
+def is_directory_or_franchise_subpage(url: Optional[str]) -> bool:
+    """Checks if a URL belongs to a directory, manufacturer aggregator, or franchise listing."""
+    if not url:
+        return False
+    try:
+        parsed = urlparse(url)
+        netloc = parsed.netloc.replace("www.", "").lower()
+        if ":" in netloc:
+            netloc = netloc.split(":")[0]
+        path = parsed.path.lower()
+
+        # National directory domain check
+        if any(netloc == d or netloc.endswith("." + d) for d in DIRECTORY_DOMAINS):
+            return True
+        # Directory path check
+        if any(pat in path for pat in DIRECTORY_PATH_PATTERNS):
+            return True
+    except Exception:
+        pass
+    return False
+
+
+def is_valid_social_url(url: Optional[str]) -> bool:
+    """Validates social URL, filtering out website builder templates and share links."""
+    if not url:
+        return False
+    url_lower = url.lower()
+    return not any(pat in url_lower for pat in BLACKLISTED_SOCIAL_PATTERNS)
+
 # Canonical subpages prioritized when looking for contact information
 CANONICAL_TARGETS = ["/contact", "/contact-us", "/about", "/about-us", "/reach-us", "/get-in-touch"]
 
@@ -148,10 +203,54 @@ def extract_domain(url: str) -> str:
         return ""
 
 
+# Common English prose words falsely captured as TLDs from unspaced prose (e.g., and@ease.the)
+REJECTED_TLD_WORDS = {
+    "they", "the", "our", "their", "them", "these", "those",
+    "book", "read", "view", "more", "home", "ease", "page",
+    "site", "post", "blog", "time", "year", "days", "week",
+    "month", "hour", "call", "help", "text", "form", "send",
+    "look", "find", "good", "best", "next", "back", "here",
+    "from", "with", "into", "that", "this", "what", "when",
+    "where", "will", "have", "been", "were", "said", "make",
+    "like", "just", "know", "take", "come", "could", "than",
+    "reach", "about", "contact", "phone", "email", "mail",
+    "open", "close", "start", "stop", "true", "false", "null",
+    "and", "you", "your", "are", "not", "for", "but", "all",
+}
+
+# Approved / Standard IANA and real-world TLD whitelist
+APPROVED_TLDS = {
+    # Classic gTLDs & Infrastructure
+    "com", "net", "org", "edu", "gov", "mil", "int", "info", "biz", "name", "pro",
+    "coop", "aero", "museum", "mobi", "jobs", "tel", "asia", "cat", "post", "xxx",
+    # Modern & Industry gTLDs
+    "io", "ai", "co", "app", "dev", "tech", "online", "store", "site", "space",
+    "website", "club", "vip", "live", "life", "world", "today", "guru", "expert",
+    "solutions", "services", "agency", "media", "digital", "global", "center",
+    "zone", "studio", "design", "house", "care", "clinic", "dental", "doctor",
+    "health", "hospital", "legal", "law", "attorney", "finance", "accounting",
+    "capital", "trade", "market", "business", "company", "enterprise", "group",
+    "holdings", "ventures", "plumbing", "roofing", "construction", "build",
+    "contractors", "repair", "electric", "solar", "clean", "green", "security",
+    "systems", "cloud", "data", "software", "link", "click", "xyz", "top",
+    "me", "tv", "cc", "ws", "fm", "am", "so", "to", "gg",
+    # Primary Country Code ccTLDs
+    "us", "uk", "ca", "au", "de", "fr", "bd", "in", "pk", "za", "nz", "nl",
+    "ch", "se", "no", "fi", "dk", "es", "it", "pt", "ru", "cn", "jp", "kr",
+    "sg", "my", "th", "ph", "vn", "id", "mx", "br", "ar", "cl", "ae", "sa",
+    "eg", "tr", "gr", "pl", "cz", "ro", "hu", "ua", "at", "be", "ie", "hk",
+    "tw", "ng", "ke", "gh", "ug", "tz", "kw", "qa", "om", "bh", "lk", "np",
+}
+
+
 def is_valid_email(email: str) -> bool:
     """
-    Strictly validates extracted email addresses and filters out garbage,
-    file extensions, dummy placeholders, retina image filenames, and server daemon domains.
+    Strictly validates extracted email addresses (Section 2.1):
+    1. Filters out prose false-positives (me@ease.they, and@ease.the, etc.).
+    2. Validates against approved TLD whitelist and rejects prose words.
+    3. Rejects phone numbers in domain (reached@708-633-9614.reach).
+    4. Filters out retina asset filenames (image@2x.png, logo@3x.webp).
+    5. Strips trailing punctuation and rejects dummy placeholder domains/usernames.
     """
     if not email:
         return False
@@ -172,8 +271,27 @@ def is_valid_email(email: str) -> bool:
     if "." not in domain_part:
         return False
 
-    tld = domain_part.split(".")[-1]
-    if len(tld) < 2 or len(tld) > 12 or not tld.isalpha():
+    # Check for phone numbers or dashes/dots in domain (e.g. 302.221.4200 or 708-633-9614)
+    if re.search(r"\d{3}[\.\-_]\d{3}", domain_part) or re.search(r"\d{3,}[-_]\d{3,}", domain_part):
+        return False
+
+    # Reject non-email suffixes and dummy extensions
+    if any(domain_part.endswith(bad_ext) for bad_ext in (
+        ".name", ".local", ".test", ".invalid", ".png", ".jpg", ".jpeg",
+        ".webp", ".svg", ".js", ".css", ".gif", ".pdf", ".zip"
+    )):
+        return False
+
+    tld = domain_part.split(".")[-1].strip().lower()
+    if len(tld) < 2 or len(tld) > 18 or not tld.isalpha():
+        return False
+
+    # Strict TLD Validation against English prose words
+    if tld in REJECTED_TLD_WORDS:
+        return False
+
+    # Strict TLD Whitelist Check
+    if tld not in APPROVED_TLDS:
         return False
 
     # Check junk extensions
@@ -184,8 +302,8 @@ def is_valid_email(email: str) -> bool:
     if re.search(r"@\d+x\.", clean, re.I):
         return False
 
-    # Check junk domains
-    for junk_d in JUNK_DOMAINS:
+    # Check junk and blacklisted builder/agency domains
+    for junk_d in JUNK_DOMAINS.union(BLACKLISTED_EMAIL_DOMAINS):
         if domain_part == junk_d or domain_part.endswith("." + junk_d):
             return False
 
@@ -249,10 +367,57 @@ def score_email(email: str, website_url: str) -> int:
     return score
 
 
-def select_best_single_email(emails: Set[str], website_url: str) -> List[str]:
+CONSUMER_ISP_DOMAINS = {
+    "gmail.com", "yahoo.com", "outlook.com", "hotmail.com", "aol.com",
+    "icloud.com", "msn.com", "comcast.net", "verizon.net", "att.net",
+    "live.com", "protonmail.com", "me.com", "ymail.com", "sbcglobal.net",
+    "cox.net", "charter.net", "bellsouth.net", "earthlink.net"
+}
+
+
+def is_third_party_agency_email(email: str, website_url: str, business_name: Optional[str] = None) -> bool:
+    """
+    Checks if an email belongs to an unrelated third-party web design agency / developer
+    (e.g., contact@sansoxygen.com on pinnacleplumbingde.com) rather than the business itself.
+    """
+    clean = email.strip().lower()
+    if "@" not in clean:
+        return True
+    _, email_domain = clean.split("@", 1)
+
+    # 1. Allow consumer/ISP providers
+    if email_domain in CONSUMER_ISP_DOMAINS:
+        return False
+
+    site_domain = extract_domain(website_url).lower()
+    if not site_domain:
+        return False
+
+    # 2. Allow if email root domain matches website root domain
+    if email_domain == site_domain or email_domain.endswith("." + site_domain) or site_domain.endswith("." + email_domain):
+        return False
+
+    # 3. Allow if sharing >= 5-char brand substring with website domain or business name
+    site_tokens = set(re.findall(r"[a-z0-9]{4,}", site_domain))
+    biz_tokens = set(re.findall(r"[a-z0-9]{4,}", (business_name or "").lower()))
+    all_brand_tokens = site_tokens.union(biz_tokens)
+
+    for tok in all_brand_tokens:
+        if len(tok) >= 5 and tok in email_domain:
+            return False
+
+    # 4. If email domain shares zero words with Business Name or Website URL, reject as third-party agency
+    email_domain_tokens = set(re.findall(r"[a-z0-9]{4,}", email_domain))
+    if not email_domain_tokens.intersection(all_brand_tokens):
+        return True
+
+    return False
+
+
+def select_best_single_email(emails: Set[str], website_url: str, business_name: Optional[str] = None) -> List[str]:
     """
     Selects exactly ONE best, most authentic business contact email.
-    Eliminates duplicates, junk, and secondary emails so that the export
+    Eliminates duplicates, junk, agency footers, and secondary emails so that the export
     contains a single high-quality lead email.
     """
     if not emails:
@@ -262,9 +427,13 @@ def select_best_single_email(emails: Set[str], website_url: str) -> List[str]:
     if not valid:
         return []
 
+    # Filter out unrelated third-party web agency emails
+    biz_emails = [e for e in valid if not is_third_party_agency_email(e, website_url, business_name)]
+    candidates = biz_emails if biz_emails else valid
+
     # Sort by score descending, then by shorter username prefix (info@ preferred over very long words)
     sorted_emails = sorted(
-        valid,
+        candidates,
         key=lambda e: (score_email(e, website_url), -len(e.split("@")[0])),
         reverse=True
     )
@@ -380,18 +549,20 @@ def extract_socials(soup: BeautifulSoup, current_socials: SocialLinks) -> Social
         href_lower = href.lower()
 
         if not socials.facebook and ("facebook.com/" in href_lower or "fb.com/" in href_lower):
-            if "sharer" not in href_lower and "share.php" not in href_lower:
+            if is_valid_social_url(href) and "sharer" not in href_lower and "share.php" not in href_lower:
                 socials.facebook = href
 
         elif not socials.instagram and "instagram.com/" in href_lower:
-            socials.instagram = href
+            if is_valid_social_url(href):
+                socials.instagram = href
 
         elif not socials.linkedin and "linkedin.com/" in href_lower:
-            if "sharearticle" not in href_lower and "sharing" not in href_lower:
+            if is_valid_social_url(href) and "sharearticle" not in href_lower and "sharing" not in href_lower:
                 socials.linkedin = href
 
         elif not socials.whatsapp and ("wa.me/" in href_lower or "api.whatsapp.com/send" in href_lower):
-            socials.whatsapp = href
+            if is_valid_social_url(href):
+                socials.whatsapp = href
 
     return socials
 
@@ -498,7 +669,7 @@ def discover_target_pages(soup: BeautifulSoup, base_url: str, max_pages: int = 3
     return target_queue[:max_pages]
 
 
-def fetch_html(url: str, timeout: float = 3.5) -> Optional[str]:
+def fetch_html(url: str, timeout: float = 2.5) -> Optional[str]:
     """
     Fetches HTML content with curl_cffi using chrome124 TLS fingerprint.
     Tight timeout prevents slow or hanging sites from stalling scraper worker threads.
@@ -539,7 +710,7 @@ def fetch_html(url: str, timeout: float = 3.5) -> Optional[str]:
                 response = requests.get(
                     http_url,
                     impersonate=DEFAULT_IMPERSONATE,
-                    timeout=2.5,
+                    timeout=1.5,
                     verify=False,
                     allow_redirects=True,
                     headers=headers,
@@ -558,15 +729,18 @@ def enrich_single_lead(
     extract_email_opt: bool = True,
     extract_social_opt: bool = True,
     detect_cms_opt: bool = True,
+    audit_seo_opt: bool = False,
     max_pages: int = 1,
+    default_target_city: Optional[str] = None,
 ) -> LeadItem:
     """
     High-Speed website deep-scraper for a single business:
     1. Fetches Homepage ('/') with 3.5s timeout.
     2. Extracts CMS, socials, phone, and emails.
-    3. EARLY STOPPING: If Homepage contains a verified domain email, subpage crawling is skipped.
-    4. If no email on Homepage, checks AT MOST 1 contact page with 2.5s timeout.
-    5. Saves strictly ONE single highest-ranking authentic email.
+    3. In-Flight Local SEO Audit: If audit_seo_opt is True, runs 11 SEO checks on the cached homepage HTML.
+    4. EARLY STOPPING: If Homepage contains a verified domain email, subpage crawling is skipped.
+    5. If no email on Homepage, checks AT MOST 1 contact page with 2.5s timeout.
+    6. Saves strictly ONE single highest-ranking authentic email.
     """
     if lead.website_status != "Has Own Website" or not lead.website_url:
         return lead
@@ -574,13 +748,85 @@ def enrich_single_lead(
     clean_url = clean_website_url(lead.website_url) or lead.website_url
     lead.website_url = clean_url
 
+    # Directory / Aggregator / Franchise subpage detection
+    if is_directory_or_franchise_subpage(clean_url):
+        logger.info("Lead '%s' (%s) detected as Directory / Franchise Subpage. Discarding corporate data.", lead.name, clean_url)
+        lead.website_status = "Directory / Franchise Subpage"
+        lead.emails = []
+        lead.social_links = SocialLinks()
+        if audit_seo_opt:
+            try:
+                from backend.seo_audit.models import AuditInput
+                from backend.seo_audit.auditor import build_no_website_report
+                resolved_target_city = lead.neighborhood or default_target_city or ""
+                audit_input = AuditInput(
+                    url=clean_url,
+                    business_name=lead.name,
+                    category=lead.category or "",
+                    city=resolved_target_city,
+                    target_city=resolved_target_city,
+                    phone=lead.phone or "",
+                    address=lead.address or "",
+                    rating=lead.rating,
+                    reviews_count=lead.reviews_count,
+                    place_id=lead.place_id,
+                )
+                rep = build_no_website_report(audit_input)
+                lead.seo_report = rep.model_dump()
+            except Exception:
+                pass
+        return lead
+
     try:
-        # 1. Fetch Homepage (3.5s max)
-        html_home = fetch_html(clean_url, timeout=3.5)
+        # 1. Fetch Homepage (2.5s max)
+        start_time = time.perf_counter()
+        html_home = fetch_html(clean_url, timeout=2.5)
+        elapsed_seconds = round(time.perf_counter() - start_time, 2)
+
         if not html_home:
+            # If site was unreachable, record failure in SEO audit if requested
+            if audit_seo_opt:
+                try:
+                    from backend.seo_audit.models import AuditInput
+                    from backend.seo_audit.auditor import audit_single_business
+                    audit_input = AuditInput(
+                        url=clean_url,
+                        business_name=lead.name,
+                        category=lead.category or "",
+                        city=lead.neighborhood or "",
+                        phone=lead.phone or "",
+                        address=lead.address or "",
+                    )
+                    report = audit_single_business(audit_input, cached_html="", elapsed_seconds=elapsed_seconds)
+                    lead.seo_report = report.model_dump()
+                except Exception:
+                    pass
             return lead
 
         soup_home = BeautifulSoup(html_home, "lxml")
+
+        # In-Flight Local SEO Audit on cached Homepage HTML with actual elapsed timing
+        if audit_seo_opt:
+            try:
+                from backend.seo_audit.models import AuditInput
+                from backend.seo_audit.auditor import audit_single_business
+                resolved_target_city = lead.neighborhood or default_target_city or ""
+                audit_input = AuditInput(
+                    url=clean_url,
+                    business_name=lead.name,
+                    category=lead.category or "",
+                    city=resolved_target_city,
+                    target_city=resolved_target_city,
+                    phone=lead.phone or "",
+                    address=lead.address or "",
+                    rating=lead.rating,
+                    reviews_count=lead.reviews_count,
+                    place_id=lead.place_id,
+                )
+                report = audit_single_business(audit_input, cached_html=html_home, elapsed_seconds=elapsed_seconds)
+                lead.seo_report = report.model_dump()
+            except Exception:
+                pass
 
         # Extract CMS from homepage
         if detect_cms_opt and not lead.cms_tech:
@@ -615,7 +861,7 @@ def enrich_single_lead(
             subpage_urls = discover_target_pages(soup_home, clean_url, max_pages=1)
             if subpage_urls:
                 contact_url = subpage_urls[0]
-                html_sub = fetch_html(contact_url, timeout=2.5)
+                html_sub = fetch_html(contact_url, timeout=1.8)
                 if html_sub:
                     soup_sub = BeautifulSoup(html_sub, "lxml")
                     if extract_email_opt:
@@ -627,9 +873,9 @@ def enrich_single_lead(
                     if detect_cms_opt and not lead.cms_tech:
                         lead.cms_tech = detect_cms(html_sub)
 
-        # 3. Select strictly ONE single best email (no junk, no placeholders, no long lists)
+        # 3. Select strictly ONE single best email (no junk, no placeholders, no agency footers)
         if extract_email_opt:
-            lead.emails = select_best_single_email(all_emails, clean_url)
+            lead.emails = select_best_single_email(all_emails, clean_url, business_name=lead.name)
 
         # Explicitly free lxml C-tree memory
         try:
@@ -653,13 +899,16 @@ def enrich_leads_concurrently(
     extract_email_opt: bool = True,
     extract_social_opt: bool = True,
     detect_cms_opt: bool = True,
+    audit_seo_opt: bool = False,
     max_pages_per_site: int = 2,
     stop_event: Optional[Any] = None,
     on_lead_completed: Optional[Callable[[LeadItem], None]] = None,
+    default_target_city: Optional[str] = None,
 ) -> List[LeadItem]:
     """
     Enriches multiple leads in parallel using ThreadPoolExecutor.
     Supports real-time per-lead callback (on_lead_completed) as each individual site finishes.
+    Supports in-flight Local SEO audit using cached homepage HTML.
     Supports graceful cancellation via stop_event.
     """
     leads_to_enrich = [l for l in leads if l.website_status == "Has Own Website" and l.website_url]
@@ -685,7 +934,9 @@ def enrich_leads_concurrently(
                 extract_email_opt=extract_email_opt,
                 extract_social_opt=extract_social_opt,
                 detect_cms_opt=detect_cms_opt,
+                audit_seo_opt=audit_seo_opt,
                 max_pages=max_pages_per_site,
+                default_target_city=default_target_city,
             )
             future_to_pid[future] = lead.place_id
 

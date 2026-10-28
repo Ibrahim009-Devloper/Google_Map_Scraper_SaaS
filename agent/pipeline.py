@@ -5,11 +5,35 @@ conditional website enrichment, and export to JSON & CSV.
 """
 
 import os
+import sys
 import csv
 import json
 import time
 import datetime
+import re
 from typing import List, Dict, Any, Optional, Callable
+
+# Ensure Windows stdout never crashes on international characters
+if sys.platform.startswith("win"):
+    try:
+        if sys.stdout and hasattr(sys.stdout, "reconfigure"):
+            sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+        if sys.stderr and hasattr(sys.stderr, "reconfigure"):
+            sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+    except Exception:
+        pass
+
+
+def safe_print(*args, **kwargs):
+    """Safely prints to stdout without raising UnicodeEncodeError on Windows."""
+    try:
+        print(*args, **kwargs)
+    except Exception:
+        try:
+            sanitized = [str(a).encode("ascii", errors="replace").decode("ascii") for a in args]
+            print(*sanitized, **kwargs)
+        except Exception:
+            pass
 
 from config import LEADS_DIR, ANONYMOUS_LEAD_LIMIT
 from agent.schemas import ActionPlan, LeadItem
@@ -26,6 +50,33 @@ from backend.temp_store import (
     increment_anonymous_quota_sync,
     get_anonymous_quota_sync,
 )
+
+
+def is_lead_category_relevant(lead_category: Optional[str], target_keywords: List[str], user_prompt: Optional[str] = None) -> bool:
+    """
+    Checks if a lead's business category is relevant to the target search keywords.
+    Prevents irrelevant Google Maps results (e.g. gas stations, banks when searching for dentists/plumbers).
+    """
+    if not lead_category or not lead_category.strip():
+        return True
+    if not target_keywords:
+        return True
+
+    from backend.seo_audit.analyzer import matches_category_synonyms
+
+    target_terms = list(target_keywords)
+    if user_prompt:
+        target_terms.append(user_prompt)
+
+    cat_low = lead_category.strip().lower()
+    for kw in target_terms:
+        kw_low = kw.strip().lower()
+        if matches_category_synonyms(kw_low, cat_low) or matches_category_synonyms(cat_low, kw_low):
+            return True
+        if kw_low in cat_low or cat_low in kw_low:
+            return True
+
+    return False
 
 
 def filter_lead(lead: LeadItem, plan: ActionPlan) -> bool:
@@ -64,6 +115,11 @@ def filter_lead(lead: LeadItem, plan: ActionPlan) -> bool:
             return False
     if filters.max_reviews is not None:
         if lead.reviews_count > filters.max_reviews:
+            return False
+
+    # 5. Category Relevancy Filter (Filter out irrelevant business categories)
+    if plan.keywords and lead.category:
+        if not is_lead_category_relevant(lead.category, plan.keywords, plan.user_prompt):
             return False
 
     return True
@@ -114,12 +170,16 @@ def export_leads_to_csv(leads: List[LeadItem], filepath: str) -> None:
         "source_query",
     ]
 
+    has_seo = any(bool(getattr(lead, "seo_report", None)) for lead in leads)
+    if has_seo:
+        fieldnames.extend(["seo_health_score", "lead_pitch_priority", "icebreaker_hook"])
+
     with open(filepath, "w", newline="", encoding="utf-8-sig") as f:
         writer = csv.DictWriter(f, fieldnames=fieldnames)
         writer.writeheader()
 
         for lead in leads:
-            writer.writerow({
+            row = {
                 "place_id": lead.place_id,
                 "name": lead.name,
                 "category": lead.category or "",
@@ -143,7 +203,24 @@ def export_leads_to_csv(leads: List[LeadItem], filepath: str) -> None:
                 "order_link": lead.order_link or "",
                 "google_maps_url": lead.google_maps_url or "",
                 "source_query": lead.source_query or "",
-            })
+            }
+            if has_seo:
+                seo_rep = getattr(lead, "seo_report", None)
+                if isinstance(seo_rep, dict):
+                    h_score = seo_rep.get("seo_health_score")
+                    row["seo_health_score"] = f"{h_score}/100" if h_score is not None else "N/A"
+                    row["lead_pitch_priority"] = seo_rep.get("lead_pitch_priority", "")
+                    row["icebreaker_hook"] = seo_rep.get("icebreaker_hook", "")
+                elif hasattr(seo_rep, "seo_health_score"):
+                    h_score = seo_rep.seo_health_score
+                    row["seo_health_score"] = f"{h_score}/100" if h_score is not None else "N/A"
+                    row["lead_pitch_priority"] = getattr(seo_rep, "lead_pitch_priority", "")
+                    row["icebreaker_hook"] = getattr(seo_rep, "icebreaker_hook", "")
+                else:
+                    row["seo_health_score"] = "N/A"
+                    row["lead_pitch_priority"] = ""
+                    row["icebreaker_hook"] = ""
+            writer.writerow(row)
 
 
 def run_pipeline(
@@ -238,6 +315,7 @@ def run_pipeline(
     all_raw_leads: List[LeadItem] = []
     filtered_leads: List[LeadItem] = []
     seen_place_ids: set = set()
+    seen_root_domains: set = set()
     job_status = "running"
     start_time = time.time()
 
@@ -311,7 +389,7 @@ def run_pipeline(
                     print(f"[Warning] on_batch callback error: {cb_err}")
 
         email_str = f" | Email: {cleaned_lead.emails[0]}" if cleaned_lead.emails else ""
-        print(f"    [+1 Lead Harvested] #{len(filtered_leads)} '{cleaned_lead.name}' ({cleaned_lead.website_status}){email_str}", flush=True)
+        safe_print(f"    [+1 Lead Harvested] #{len(filtered_leads)} '{cleaned_lead.name}' ({cleaned_lead.website_status}){email_str}", flush=True)
 
         # Check quota limit or user requested target
         if effective_limit and len(filtered_leads) >= effective_limit:
@@ -343,6 +421,17 @@ def run_pipeline(
         for lead in new_raw_leads:
             if lead.place_id not in seen_place_ids:
                 seen_place_ids.add(lead.place_id)
+
+                # Domain Deduplication: If lead has own website, check if domain was already seen
+                if lead.website_status == "Has Own Website" and lead.website_url:
+                    from backend.seo_audit.auditor import extract_root_domain
+                    root_dom = extract_root_domain(lead.website_url)
+                    if root_dom:
+                        if root_dom in seen_root_domains:
+                            # Skip duplicate practitioner or duplicate business on same root domain
+                            continue
+                        seen_root_domains.add(root_dom)
+
                 all_raw_leads.append(lead)
                 if filter_lead(lead, plan):
                     batch_candidates.append(lead)
@@ -367,15 +456,38 @@ def run_pipeline(
                 if job_id:
                     update_job_sync(job_id, current_area=f"Deep scraping {len(enrichable)} websites for emails & contact info...")
 
+                # Determine dataset's default_search_city (mode of non-empty addresses) or from search sub-location
+                from collections import Counter
+                city_counts = Counter()
+                for l in all_raw_leads:
+                    if l.address:
+                        m = re.search(r',\s*([A-Za-z\s\.]+),\s*[A-Z]{2}\s*\d{5}', l.address)
+                        if m:
+                            c = m.group(1).strip().strip(".,")
+                            if c and len(c) > 1:
+                                city_counts[c] += 1
+                batch_default_city = city_counts.most_common(1)[0][0] if city_counts else None
+                if not batch_default_city and plan.sub_locations:
+                    for sl in plan.sub_locations:
+                        parts = [p.strip() for p in sl.area_name.split(",")]
+                        if len(parts) >= 2 and parts[-1]:
+                            batch_default_city = parts[-1]
+                            break
+                        elif parts[0]:
+                            batch_default_city = parts[0]
+                            break
+
                 enrich_leads_concurrently(
                     enrichable,
                     country_code=plan.country_code,
                     extract_email_opt=plan.enrichment.extract_emails,
                     extract_social_opt=plan.enrichment.extract_socials,
                     detect_cms_opt=plan.enrichment.detect_cms,
+                    audit_seo_opt=bool(getattr(plan.enrichment, "audit_seo", False)),
                     max_pages_per_site=1,
                     stop_event=stop_event,
                     on_lead_completed=save_and_stream_lead,
+                    default_target_city=batch_default_city,
                 )
         else:
             # Google Maps only: Stream every lead 1-by-1 immediately
@@ -533,11 +645,36 @@ def run_pipeline(
         timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
         json_path = str(LEADS_DIR / f"leads_{timestamp}.json")
         csv_path = str(LEADS_DIR / f"leads_{timestamp}.csv")
+        xlsx_path = str(LEADS_DIR / f"leads_{timestamp}.xlsx")
 
         export_leads_to_json(filtered_leads, json_path)
         export_leads_to_csv(filtered_leads, csv_path)
 
-        pipeline_log(f"[Export] Results saved to JSON ({json_path}) and CSV ({csv_path})", "INFO")
+        try:
+            from backend.excel_exporter import generate_leads_excel
+            from backend.seo_audit.xlsx_appender import append_seo_columns_to_excel
+            excel_bytes = generate_leads_excel(filtered_leads, title="Verified Leads", include_enrichment=plan.enrichment.enabled)
+            has_seo = any(bool(getattr(l, "seo_report", None)) for l in filtered_leads)
+            if has_seo or getattr(plan.enrichment, "audit_seo", False):
+                seo_reports = {}
+                for l in filtered_leads:
+                    rep = getattr(l, "seo_report", None)
+                    if rep:
+                        try:
+                            from backend.seo_audit.models import SEOReport
+                            if isinstance(rep, dict):
+                                seo_reports[l.place_id] = SEOReport(**rep)
+                            elif isinstance(rep, SEOReport):
+                                seo_reports[l.place_id] = rep
+                        except Exception:
+                            pass
+                excel_bytes = append_seo_columns_to_excel(excel_bytes, seo_reports)
+            with open(xlsx_path, "wb") as xf:
+                xf.write(excel_bytes)
+        except Exception as xerr:
+            print(f"[Warning] XLSX export failed: {xerr}")
+
+        pipeline_log(f"[Export] Results saved to JSON ({json_path}), CSV ({csv_path}), and XLSX ({xlsx_path})", "INFO")
 
     return {
         "job_id": job_id,
@@ -547,5 +684,6 @@ def run_pipeline(
         "total_filtered": len(filtered_leads),
         "json_path": json_path,
         "csv_path": csv_path,
+        "xlsx_path": xlsx_path if export_files else None,
         "leads": filtered_leads,
     }
