@@ -54,3 +54,71 @@ def test_seo_models_and_config():
         address="123 Main St, Austin, TX",
     )
     assert audit_input.city == "Austin"
+
+
+def test_fetch_page_for_audit_success(monkeypatch):
+    from seo_audit.fetcher import fetch_page_for_audit, FetchResult
+
+    class MockResponse:
+        status_code = 200
+        text = "<html><head><title>Test</title></head><body><h1>Hello</h1></body></html>"
+        headers = {"content-type": "text/html"}
+        url = "https://example.com/"
+
+    def mock_get(url, **kwargs):
+        return MockResponse()
+
+    from curl_cffi import requests as curl_requests
+    monkeypatch.setattr(curl_requests, "get", mock_get)
+
+    res = fetch_page_for_audit("https://example.com", timeout=5)
+    assert isinstance(res, FetchResult)
+    assert res.status_code == 200
+    assert "Hello" in res.html
+    assert res.final_url == "https://example.com/"
+    assert res.ssl_failed is False
+    assert res.elapsed_seconds is not None
+
+
+def test_fetch_page_for_audit_ssl_retry(monkeypatch):
+    from seo_audit.fetcher import fetch_page_for_audit
+
+    calls = []
+
+    class MockResponse:
+        status_code = 200
+        text = "<html><body>HTTP fallback</body></html>"
+        headers = {}
+        url = "http://example.com/"
+
+    def mock_get(url, **kwargs):
+        calls.append(url)
+        if url.startswith("https://"):
+            from curl_cffi.requests.errors import RequestsError
+            raise RequestsError("SSL certificate problem")
+        return MockResponse()
+
+    from curl_cffi import requests as curl_requests
+    monkeypatch.setattr(curl_requests, "get", mock_get)
+
+    res = fetch_page_for_audit("https://example.com", timeout=5)
+    assert res.status_code == 200
+    assert res.ssl_failed is True
+    assert "HTTP fallback" in res.html
+    assert len(calls) == 2
+
+
+def test_fetch_page_for_audit_timeout(monkeypatch):
+    from seo_audit.fetcher import fetch_page_for_audit
+
+    def mock_get(url, **kwargs):
+        from curl_cffi.requests.errors import RequestsError
+        raise RequestsError("Connection timed out after 5000ms")
+
+    from curl_cffi import requests as curl_requests
+    monkeypatch.setattr(curl_requests, "get", mock_get)
+
+    res = fetch_page_for_audit("https://timeout-domain.com", timeout=5)
+    assert res.status_code is None
+    assert "timed out" in res.error_message.lower()
+
