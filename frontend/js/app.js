@@ -3526,13 +3526,5 @@ function renderSeoAuditReportInModal(lead, report) {
     }).join("");
   }
 }
-            <div class="mt-1 pl-5 text-[11px] text-primary bg-primary/5 p-2 rounded-lg border border-primary/10">
-              <span class="font-semibold">Recommended Fix:</span> ${escapeHtml(recommendation)}
-            </div>
-          ` : ""}
-        </div>
-      `;
-    }).join("");
-  }
-}
+
 
