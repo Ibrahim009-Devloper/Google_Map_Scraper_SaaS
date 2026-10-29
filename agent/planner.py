@@ -24,10 +24,11 @@ PLANNER_SYSTEM_PROMPT = """You are an expert B2B Lead Generation Strategist and 
 Your job is to convert a user's natural language lead request into a strict JSON execution plan.
 
 RULES:
-1. KEYWORDS (CRITICAL - PRESERVE USER'S CORE INTENT):
-   - Always retain the user's explicit requested business category as the FIRST and PRIMARY keyword (e.g., if user asks for "restaurants in Dhaka", "Restaurant" MUST be the first keyword).
-   - Generate 2 to 4 closely related Google Maps category keywords (e.g. ["Restaurant", "Bangladeshi restaurant", "Diner", "Fast food restaurant"]).
-   - NEVER generate distant, unrelated, or random categories to artificially inflate results. The user's core requested category must NEVER be forgotten or diluted!
+1. KEYWORDS (STRICT FIDELITY - PRESERVE EXACT REQUESTED CATEGORY):
+   - Extract ONLY the exact business category or keyword explicitly requested by the user.
+   - If the user specifies ONE category (e.g. "Wealth Management Firms in Little Rock", "Dentists in Miami", "Plumbers in Chicago"), return an array with ONLY THAT 1 EXACT KEYWORD: e.g. ["Wealth Management"] or ["Wealth Management Firms"].
+   - CRITICAL: DO NOT invent, generate, or add other related/variant categories (do NOT add "Financial Planner", "Investment Advisor", etc.) because searching for different categories dilutes lead qualification!
+   - ONLY return multiple keywords if the user EXPLICITLY requested multiple different categories in their prompt (e.g., "cafes and restaurants in Dhaka" -> ["Restaurant", "Cafe"]). Otherwise, always return EXACTLY 1 keyword matching the user's intent.
 2. GEO-SPLITTING & SUB-LOCATIONS (CRITICAL - MUST NEVER BE EMPTY):
    - "sub_locations" MUST NEVER BE EMPTY! Return at least 5 to 20 sub-locations with valid center Latitude (`lat`), Longitude (`lon`), and `radius` in meters (usually 2500 to 4000).
    - If the user specifies a city or neighborhood (e.g. "Dhaka", "Banani", "London", "New York", "Mumbai"), break it down into smaller neighborhoods/sub-areas.
@@ -483,12 +484,45 @@ def get_comprehensive_country_hubs(country_code: str = "bd") -> List[SubLocation
     return get_default_sub_locations(country_code)
 
 
+def has_explicit_multiple_categories(user_prompt: str) -> bool:
+    """
+    Detects if the user explicitly requested multiple distinct business categories in natural language.
+    e.g. 'restaurants and cafes', 'plumbers & electricians', 'hotels or motels'.
+    Does NOT trigger on location commas like 'Little Rock, Arkansas' or 'Miami, FL'.
+    """
+    clean = user_prompt.strip()
+    # Split on location prepositions
+    parts = re.split(r'\b(?:in|at|near|around|of)\b', clean, flags=re.I, maxsplit=1)
+    category_part = parts[0] if parts else clean
+    multi_regex = r'\b(?:and|or|plus|as well as|both)\b|[&]|(?:\b(?:এবং|ও|বা|কিংবা)\b)'
+    return bool(re.search(multi_regex, category_part, re.IGNORECASE))
+
+
+def extract_raw_keyword_from_prompt(user_prompt: str) -> Optional[str]:
+    """
+    Extracts the exact raw category string from a natural language prompt.
+    e.g. 'Wealth Management Firms in Little Rock, Arkansas 100 lead' -> 'Wealth Management Firms'.
+    """
+    if not user_prompt:
+        return None
+    clean = user_prompt.strip()
+    clean = re.sub(r'^(?:please\s+)?(?:can\s+you\s+)?(?:find|get|scrape|give\s+me|search\s+for|collect|need|i\s+want|top)\s+', '', clean, flags=re.I).strip()
+    match = re.search(r'^(.+?)\s+\b(?:in|at|near|around|of)\b', clean, re.I)
+    if match:
+        cand = match.group(1).strip()
+        cand = re.sub(r'^\d+\s*(?:ta|ti|leads?|entities|companies)?\s*', '', cand, flags=re.I).strip()
+        if cand and 3 <= len(cand) <= 50:
+            return cand.title()
+    return None
+
+
 def detect_and_preserve_core_keyword(user_prompt: str, generated_keywords: List[str]) -> List[str]:
     """
     CRITICAL RULE ENFORCER:
-    Ensures that the user's explicit requested business category is ALWAYS preserved
-    as the PRIMARY keyword at index 0, and never forgotten or diluted by LLM variants.
-    Keeps keyword list focused (2 to 4 keywords total).
+    Ensures that the user's explicit requested business category is strictly honored.
+    If the user specified ONE business category (e.g. 'Wealth Management Firms in Little Rock'),
+    returns an array with ONLY THAT 1 KEYWORD so that lead qualification is never diluted by unwanted synonym/variant searches.
+    Only returns multiple keywords if the user explicitly requested multiple categories (e.g. 'restaurants and cafes').
     """
     if not generated_keywords:
         generated_keywords = ["Business"]
@@ -523,8 +557,21 @@ def detect_and_preserve_core_keyword(user_prompt: str, generated_keywords: List[
         core_kw = "Electrician"
     elif any(w in p_lower for w in ["plumber", "plumbers", "plumbing"]):
         core_kw = "Plumber"
+    elif any(w in p_lower for w in ["wealth management", "wealth manager", "financial advisory", "asset management"]):
+        core_kw = "Wealth Management"
 
-    # Assemble cleaned keywords: core keyword first, followed by unique valid generated keywords
+    # If not matched in known categories, try extracting directly from prompt
+    if not core_kw:
+        raw_extracted = extract_raw_keyword_from_prompt(user_prompt)
+        if raw_extracted:
+            core_kw = raw_extracted
+
+    # Single Category Mode (Default): User gave 1 keyword -> search with ONLY that 1 keyword
+    if not has_explicit_multiple_categories(user_prompt):
+        primary = core_kw or generated_keywords[0]
+        return [primary]
+
+    # Multi-Category Mode: User explicitly asked for multiple categories (e.g. 'restaurants and cafes')
     final_keywords: List[str] = []
     if core_kw:
         final_keywords.append(core_kw)
@@ -536,7 +583,7 @@ def detect_and_preserve_core_keyword(user_prompt: str, generated_keywords: List[
         if len(final_keywords) >= 4:
             break
 
-    return final_keywords if final_keywords else generated_keywords[:4]
+    return final_keywords if final_keywords else generated_keywords[:1]
 
 
 def expand_sub_locations_for_target(
@@ -656,16 +703,19 @@ def create_offline_fallback_plan(user_prompt: str, target_leads: Optional[int] =
     sub_locations = get_default_sub_locations(country_code)
 
     # Dynamic Keywords based on query
-    if any(w in prompt_lower for w in ["dentist", "dental", "clinic"]):
-        keywords = ["Dentist", "Dental clinic"]
+    raw_extracted_kw = extract_raw_keyword_from_prompt(user_prompt)
+    if raw_extracted_kw:
+        keywords = [raw_extracted_kw]
+    elif any(w in prompt_lower for w in ["dentist", "dental", "clinic"]):
+        keywords = ["Dentist"]
     elif any(w in prompt_lower for w in ["hotel", "motel", "resort"]):
-        keywords = ["Hotel", "Boutique hotel", "Resort hotel"]
+        keywords = ["Hotel"]
     elif any(w in prompt_lower for w in ["software", "tech", "it"]):
-        keywords = ["Software company", "IT company"]
+        keywords = ["Software company"]
     elif any(w in prompt_lower for w in ["cafe", "coffee"]):
-        keywords = ["Cafe", "Coffee shop"]
+        keywords = ["Cafe"]
     else:
-        keywords = ["Restaurant", "Bangladeshi restaurant", "Cafe"]
+        keywords = ["Restaurant"]
 
     keywords = detect_and_preserve_core_keyword(user_prompt, keywords)
     final_target = target_leads or extract_target_count(user_prompt)

@@ -732,16 +732,21 @@ def enrich_single_lead(
     audit_seo_opt: bool = False,
     max_pages: int = 1,
     default_target_city: Optional[str] = None,
+    stop_event: Optional[Any] = None,
 ) -> LeadItem:
     """
     High-Speed website deep-scraper for a single business:
-    1. Fetches Homepage ('/') with 3.5s timeout.
+    1. Fetches Homepage ('/') with 2.5s timeout.
     2. Extracts CMS, socials, phone, and emails.
     3. In-Flight Local SEO Audit: If audit_seo_opt is True, runs 11 SEO checks on the cached homepage HTML.
     4. EARLY STOPPING: If Homepage contains a verified domain email, subpage crawling is skipped.
-    5. If no email on Homepage, checks AT MOST 1 contact page with 2.5s timeout.
+    5. If no email on Homepage, checks AT MOST 1 contact page with 1.8s timeout.
     6. Saves strictly ONE single highest-ranking authentic email.
+    7. Respects stop_event at every step for instantaneous cancellation.
     """
+    if stop_event and stop_event.is_set():
+        return lead
+
     if lead.website_status != "Has Own Website" or not lead.website_url:
         return lead
 
@@ -777,11 +782,17 @@ def enrich_single_lead(
                 pass
         return lead
 
+    if stop_event and stop_event.is_set():
+        return lead
+
     try:
         # 1. Fetch Homepage (2.5s max)
         start_time = time.perf_counter()
         html_home = fetch_html(clean_url, timeout=2.5)
         elapsed_seconds = round(time.perf_counter() - start_time, 2)
+
+        if stop_event and stop_event.is_set():
+            return lead
 
         if not html_home:
             # If site was unreachable, record failure in SEO audit if requested
@@ -805,6 +816,9 @@ def enrich_single_lead(
 
         soup_home = BeautifulSoup(html_home, "lxml")
 
+        if stop_event and stop_event.is_set():
+            return lead
+
         # In-Flight Local SEO Audit on cached Homepage HTML with actual elapsed timing
         if audit_seo_opt:
             try:
@@ -827,6 +841,9 @@ def enrich_single_lead(
                 lead.seo_report = report.model_dump()
             except Exception:
                 pass
+
+        if stop_event and stop_event.is_set():
+            return lead
 
         # Extract CMS from homepage
         if detect_cms_opt and not lead.cms_tech:
@@ -858,23 +875,24 @@ def enrich_single_lead(
 
         # 2. Early Stop: Only crawl 1 contact subpage if no domain email on homepage yet!
         if not has_domain_email and (extract_email_opt or extract_social_opt):
-            subpage_urls = discover_target_pages(soup_home, clean_url, max_pages=1)
-            if subpage_urls:
-                contact_url = subpage_urls[0]
-                html_sub = fetch_html(contact_url, timeout=1.8)
-                if html_sub:
-                    soup_sub = BeautifulSoup(html_sub, "lxml")
-                    if extract_email_opt:
-                        all_emails.update(extract_emails_from_page(soup_sub, html_sub))
-                    if extract_social_opt:
-                        lead.social_links = extract_socials(soup_sub, lead.social_links)
-                    if not lead.phone:
-                        lead.phone = extract_phone_from_soup(soup_sub, country_code=country_code)
-                    if detect_cms_opt and not lead.cms_tech:
-                        lead.cms_tech = detect_cms(html_sub)
+            if not (stop_event and stop_event.is_set()):
+                subpage_urls = discover_target_pages(soup_home, clean_url, max_pages=1)
+                if subpage_urls and not (stop_event and stop_event.is_set()):
+                    contact_url = subpage_urls[0]
+                    html_sub = fetch_html(contact_url, timeout=1.8)
+                    if html_sub and not (stop_event and stop_event.is_set()):
+                        soup_sub = BeautifulSoup(html_sub, "lxml")
+                        if extract_email_opt:
+                            all_emails.update(extract_emails_from_page(soup_sub, html_sub))
+                        if extract_social_opt:
+                            lead.social_links = extract_socials(soup_sub, lead.social_links)
+                        if not lead.phone:
+                            lead.phone = extract_phone_from_soup(soup_sub, country_code=country_code)
+                        if detect_cms_opt and not lead.cms_tech:
+                            lead.cms_tech = detect_cms(html_sub)
 
         # 3. Select strictly ONE single best email (no junk, no placeholders, no agency footers)
-        if extract_email_opt:
+        if extract_email_opt and not (stop_event and stop_event.is_set()):
             lead.emails = select_best_single_email(all_emails, clean_url, business_name=lead.name)
 
         # Explicitly free lxml C-tree memory
@@ -922,7 +940,8 @@ def enrich_leads_concurrently(
 
     lead_map = {l.place_id: l for l in leads}
 
-    with ThreadPoolExecutor(max_workers=max_workers) as executor:
+    executor = ThreadPoolExecutor(max_workers=max_workers)
+    try:
         future_to_pid = {}
         for lead in leads_to_enrich:
             if stop_event and stop_event.is_set():
@@ -937,6 +956,7 @@ def enrich_leads_concurrently(
                 audit_seo_opt=audit_seo_opt,
                 max_pages=max_pages_per_site,
                 default_target_city=default_target_city,
+                stop_event=stop_event,
             )
             future_to_pid[future] = lead.place_id
 
@@ -955,5 +975,14 @@ def enrich_leads_concurrently(
                 print(f"[Warning] Error enriching lead {pid}: {e}")
                 if on_lead_completed and pid in lead_map:
                     on_lead_completed(lead_map[pid])
+    finally:
+        if stop_event and stop_event.is_set():
+            # Instant non-blocking shutdown without waiting for running HTTP threads
+            try:
+                executor.shutdown(wait=False, cancel_futures=True)
+            except TypeError:
+                executor.shutdown(wait=False)
+        else:
+            executor.shutdown(wait=True)
 
     return [lead_map[l.place_id] for l in leads]

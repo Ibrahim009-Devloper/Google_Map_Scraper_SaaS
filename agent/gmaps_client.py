@@ -60,11 +60,16 @@ def fetch_single_page(
     gl: str = "bd",
     hl: str = "en",
     retries: int = 3,
+    stop_event: Optional[Any] = None,
 ) -> Optional[str]:
     """
     Fetches raw response text for a single offset page of Google Maps reverse API.
     Uses curl_cffi with chrome124 TLS/JA3 impersonation.
+    Supports instant cancellation via stop_event.
     """
+    if stop_event and stop_event.is_set():
+        return None
+
     url = build_search_url(
         keyword=keyword,
         area_name=area_name,
@@ -90,6 +95,8 @@ def fetch_single_page(
     }
 
     for attempt in range(1, retries + 1):
+        if stop_event and stop_event.is_set():
+            return None
         try:
             response = requests.get(
                 url,
@@ -102,13 +109,22 @@ def fetch_single_page(
             elif response.status_code == 429:
                 wait_time = attempt * 3.0
                 print(f"[RateLimit] 429 received. Backing off for {wait_time}s...")
-                time.sleep(wait_time)
+                if stop_event and stop_event.wait(timeout=wait_time):
+                    return None
+                elif not stop_event:
+                    time.sleep(wait_time)
             else:
                 print(f"[Warning] HTTP {response.status_code} on attempt {attempt} for offset {offset}")
-                time.sleep(1.0)
+                if stop_event and stop_event.wait(timeout=1.0):
+                    return None
+                elif not stop_event:
+                    time.sleep(1.0)
         except Exception as e:
             print(f"[Error] Network exception on attempt {attempt}: {e}")
-            time.sleep(1.5)
+            if stop_event and stop_event.wait(timeout=1.5):
+                return None
+            elif not stop_event:
+                time.sleep(1.5)
 
     return None
 
@@ -150,6 +166,7 @@ def fetch_all_pages_for_location(
             radius=radius,
             gl=gl,
             hl=hl,
+            stop_event=stop_event,
         )
 
         if not raw_json_text:
@@ -188,7 +205,12 @@ def fetch_all_pages_for_location(
         if stop_event and stop_event.is_set():
             break
 
-        # Polite human-like jitter delay between pages
-        time.sleep(random.uniform(0.8, 1.8))
+        # Polite human-like jitter delay between pages (interruptible on stop)
+        jitter_delay = random.uniform(0.8, 1.8)
+        if stop_event:
+            if stop_event.wait(timeout=jitter_delay):
+                break
+        else:
+            time.sleep(jitter_delay)
 
     return all_leads

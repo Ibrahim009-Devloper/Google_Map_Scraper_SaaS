@@ -122,6 +122,17 @@ class JobManager:
                 return True
             return False
 
+    async def stop_all(self):
+        """Immediately signals all running scraping jobs to halt."""
+        async with self._lock:
+            for job_id, stop_event in list(self._active_jobs.items()):
+                try:
+                    stop_event.set()
+                except Exception:
+                    pass
+            self._active_jobs.clear()
+            self._owner_to_job.clear()
+
     async def release(self, job_id: str, session_owner: str):
         async with self._lock:
             self._active_jobs.pop(job_id, None)
@@ -137,6 +148,12 @@ async def on_startup():
     """Initializes SQLite database with WAL mode and runs cleanup of stale data."""
     await temp_store.init_db()
     temp_store.cleanup_old_temp_data_sync(hours=24)
+
+
+@app.on_event("shutdown")
+async def on_shutdown():
+    """Ensures all active scraper background jobs halt immediately on server shutdown or Ctrl+C."""
+    await job_manager.stop_all()
 
 
 # ============================================================================

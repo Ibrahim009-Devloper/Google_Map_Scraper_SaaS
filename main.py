@@ -160,9 +160,16 @@ def main():
             sys.exit(0)
 
     console.print("\n[bold green]🚀 Launching Lead Generation Pipeline...[/bold green]")
-    result = run_pipeline(plan)
-
-    display_results_summary(result)
+    import threading
+    cli_stop_event = threading.Event()
+    try:
+        result = run_pipeline(plan, stop_event=cli_stop_event)
+        display_results_summary(result)
+    except KeyboardInterrupt:
+        console.print("\n[bold yellow]🛑 Cancellation received (Ctrl+C). Halting scraper immediately...[/bold yellow]")
+        cli_stop_event.set()
+        console.print("[dim]Scraper stopped. Any saved leads are preserved in SQLite/output.[/dim]")
+        sys.exit(0)
 
 
 if __name__ == "__main__":
