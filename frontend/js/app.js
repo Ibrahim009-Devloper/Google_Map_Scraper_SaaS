@@ -1213,14 +1213,16 @@ function renderLeadsFeed() {
     let websiteBadge = "";
     if (lead.website_status === "Has Own Website" && lead.website_url) {
       const domain = cleanDomain(lead.website_url);
-      const hasAudited = Boolean(lead.seo_report && (lead.seo_report.seo_health_score !== undefined || lead.seo_report.opportunity_score !== undefined));
-      const healthScore = lead.seo_report ? (lead.seo_report.seo_health_score ?? (lead.seo_report.opportunity_score !== null && lead.seo_report.opportunity_score !== undefined ? 100 - lead.seo_report.opportunity_score : null)) : null;
+      const healthScore = lead.seo_report && typeof lead.seo_report.seo_health_score === "number"
+        ? lead.seo_report.seo_health_score
+        : (lead.seo_report && typeof lead.seo_report.opportunity_score === "number" ? 100 - lead.seo_report.opportunity_score : null);
+      const hasAudited = Boolean(healthScore !== null);
       let badgeClass = "bg-amber-100 hover:bg-amber-200 text-amber-900 border-amber-300";
       if (typeof healthScore === "number") {
         if (healthScore >= 80) badgeClass = "bg-emerald-100 hover:bg-emerald-200 text-emerald-900 border-emerald-300";
         else if (healthScore < 50) badgeClass = "bg-rose-100 hover:bg-rose-200 text-rose-900 border-rose-300";
       }
-      const scoreLabel = healthScore !== null ? `Health: ${healthScore}/100` : "SEO Audited";
+      const scoreLabel = healthScore !== null ? `Health: ${healthScore}/100` : "Page SEO";
       const seoBadgeHtml = hasAudited
         ? `<button type="button" onclick="event.stopPropagation(); triggerPageSeoAudit('${lead.place_id}')" class="px-2 py-0.5 rounded text-[10px] font-bold font-label ${badgeClass} border flex items-center gap-1 shadow-2xs transition-all cursor-pointer" title="View Agency-Grade Local SEO Audit & Outreach Hook">
              <span class="material-symbols-outlined text-[12px]">troubleshoot</span>
@@ -3334,8 +3336,8 @@ async function triggerPageSeoAudit(placeId) {
     `;
   }
 
-  // If already audited and cached on the lead object
-  if (lead.seo_report && (lead.seo_report.seo_health_score !== undefined || lead.seo_report.opportunity_score !== undefined)) {
+  // If already audited with valid score and cached on the lead object
+  if (lead.seo_report && (typeof lead.seo_report.seo_health_score === "number" || typeof lead.seo_report.opportunity_score === "number")) {
     renderSeoAuditReportInModal(lead, lead.seo_report);
     return;
   }

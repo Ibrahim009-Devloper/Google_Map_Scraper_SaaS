@@ -19,6 +19,8 @@ Key Features:
 import html
 import re
 import time
+import ssl
+import urllib.request
 from urllib.parse import urljoin, urlparse, unquote
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import List, Optional, Set, Tuple, Dict, Any, Callable
@@ -669,27 +671,26 @@ def discover_target_pages(soup: BeautifulSoup, base_url: str, max_pages: int = 3
     return target_queue[:max_pages]
 
 
-def fetch_html(url: str, timeout: float = 2.5) -> Optional[str]:
+_LEGACY_SSL_CTX = ssl.create_default_context()
+_LEGACY_SSL_CTX.check_hostname = False
+_LEGACY_SSL_CTX.verify_mode = ssl.CERT_NONE
+_LEGACY_SSL_CTX.options |= getattr(ssl, "OP_LEGACY_SERVER_CONNECT", 0x4)
+
+
+def fetch_html(url: str, timeout: float = 3.5) -> Optional[str]:
     """
     Fetches HTML content with curl_cffi using chrome124 TLS fingerprint.
-    Tight timeout prevents slow or hanging sites from stalling scraper worker threads.
+    Does NOT pass conflicting manual headers so curl_cffi's native Chrome JA3
+    fingerprint and headers are preserved without triggering WAF 403 blocks.
+    Falls back to Python urllib with legacy TLS renegotiation support when servers
+    reset HTTP/2 streams (curl error 92/56).
     """
     if not url:
         return None
 
     clean_url = clean_website_url(url) or url
 
-    headers = {
-        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
-        "Accept-Language": "en-US,en;q=0.9",
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
-        "Upgrade-Insecure-Requests": "1",
-        "Sec-Fetch-Dest": "document",
-        "Sec-Fetch-Mode": "navigate",
-        "Sec-Fetch-Site": "none",
-        "Sec-Fetch-User": "?1",
-    }
-
+    # 1. Primary: curl_cffi with native chrome124 browser profile (no conflicting manual headers)
     try:
         response = requests.get(
             clean_url,
@@ -697,28 +698,54 @@ def fetch_html(url: str, timeout: float = 2.5) -> Optional[str]:
             timeout=timeout,
             verify=False,
             allow_redirects=True,
-            headers=headers,
         )
         if response.status_code == 200 and response.text:
             return response.text
-    except Exception as e:
-        # Only fallback to http if strictly an SSL/TLS error, NEVER on timeout
-        err_msg = str(e).lower()
-        if "timeout" not in err_msg and clean_url.startswith("https://"):
-            try:
-                http_url = clean_url.replace("https://", "http://", 1)
-                response = requests.get(
-                    http_url,
-                    impersonate=DEFAULT_IMPERSONATE,
-                    timeout=1.5,
-                    verify=False,
-                    allow_redirects=True,
-                    headers=headers,
-                )
-                if response.status_code == 200 and response.text:
-                    return response.text
-            except Exception:
-                pass
+    except Exception:
+        pass
+
+    # 2. Secondary fallback: Python urllib with legacy server connect & Chrome UA (bypasses HTTP/2 stream resets)
+    try:
+        req = urllib.request.Request(
+            clean_url,
+            headers={
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+                "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+                "Accept-Language": "en-US,en;q=0.9",
+            },
+        )
+        with urllib.request.urlopen(req, context=_LEGACY_SSL_CTX, timeout=timeout) as resp:
+            text = resp.read().decode("utf-8", errors="replace")
+            if resp.status == 200 and text:
+                return text
+    except Exception:
+        pass
+
+    # 3. Simple UA fallback
+    try:
+        req = urllib.request.Request(clean_url, headers={"User-Agent": "Mozilla/5.0"})
+        with urllib.request.urlopen(req, context=_LEGACY_SSL_CTX, timeout=timeout) as resp:
+            text = resp.read().decode("utf-8", errors="replace")
+            if resp.status == 200 and text:
+                return text
+    except Exception:
+        pass
+
+    # 4. HTTP scheme fallback if HTTPS had TLS error
+    if clean_url.startswith("https://"):
+        try:
+            http_url = clean_url.replace("https://", "http://", 1)
+            response = requests.get(
+                http_url,
+                impersonate=DEFAULT_IMPERSONATE,
+                timeout=2.0,
+                verify=False,
+                allow_redirects=True,
+            )
+            if response.status_code == 200 and response.text:
+                return response.text
+        except Exception:
+            pass
 
     return None
 
@@ -786,9 +813,9 @@ def enrich_single_lead(
         return lead
 
     try:
-        # 1. Fetch Homepage (2.5s max)
+        # 1. Fetch Homepage (3.5s max)
         start_time = time.perf_counter()
-        html_home = fetch_html(clean_url, timeout=2.5)
+        html_home = fetch_html(clean_url, timeout=3.5)
         elapsed_seconds = round(time.perf_counter() - start_time, 2)
 
         if stop_event and stop_event.is_set():
@@ -879,7 +906,7 @@ def enrich_single_lead(
                 subpage_urls = discover_target_pages(soup_home, clean_url, max_pages=1)
                 if subpage_urls and not (stop_event and stop_event.is_set()):
                     contact_url = subpage_urls[0]
-                    html_sub = fetch_html(contact_url, timeout=1.8)
+                    html_sub = fetch_html(contact_url, timeout=2.5)
                     if html_sub and not (stop_event and stop_event.is_set()):
                         soup_sub = BeautifulSoup(html_sub, "lxml")
                         if extract_email_opt:
