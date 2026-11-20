@@ -43,6 +43,54 @@ SEO_XLSX_COLUMNS = [
     "AI / Dynamic Icebreaker Hook",
 ]
 
+# Split Status & Details Schema for Sortable & Filterable Excel Tables (GEMINI2.md Section 5.1 Item 6)
+SEO_SPLIT_COLUMNS = [
+    # A. Technical Foundation & Crawlability
+    "Final URL & HTTP Status",
+    "SSL Status",
+    "SSL Details",
+    "TTFB Status",
+    "TTFB Details",
+    "Indexability Status",
+    "Indexability Details",
+    "Canonical Tag Status",
+    "Canonical Tag Details",
+    "Robots & Sitemap Status",
+    "Robots & Sitemap Details",
+    # B. Raw Evidence Extraction
+    "Extracted Title Text",
+    "Title Tag Status",
+    "Title Tag Details",
+    "Meta Description Status",
+    "Meta Description Details",
+    "Extracted Primary H1",
+    "H1 Tag Status",
+    "H1 Tag Details",
+    "Word Count Status",
+    "Word Count Details",
+    "Image Alt Status",
+    "Image Alt Details",
+    # C. Local SEO Signals
+    "Local Keyword Status",
+    "Local Keyword Details",
+    "Schema Status",
+    "Schema Details",
+    "NAP Status",
+    "NAP Details",
+    "Maps Embed Status",
+    "Maps Embed Details",
+    "GBP Category Status",
+    "GBP Category Details",
+    "Marketing & Tracking Status",
+    "Marketing & Tracking Details",
+    "Inner Pages Status",
+    "Inner Pages Details",
+    # D. Scoring & Outreach
+    "SEO Health Score",
+    "Lead Pitch Priority",
+    "AI / Dynamic Icebreaker Hook",
+]
+
 # Penalty deductions for SEO Health Score (0-100, where 100 is pristine)
 SEO_CHECK_PENALTIES = {
     "ssl_redirect": 20,           # Unencrypted HTTP or missing 301

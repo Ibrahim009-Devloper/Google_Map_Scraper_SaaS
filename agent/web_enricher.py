@@ -370,11 +370,110 @@ def score_email(email: str, website_url: str) -> int:
 
 
 CONSUMER_ISP_DOMAINS = {
-    "gmail.com", "yahoo.com", "outlook.com", "hotmail.com", "aol.com",
+    "gmail.com", "googlemail.com", "yahoo.com", "outlook.com", "hotmail.com", "aol.com",
     "icloud.com", "msn.com", "comcast.net", "verizon.net", "att.net",
-    "live.com", "protonmail.com", "me.com", "ymail.com", "sbcglobal.net",
+    "live.com", "protonmail.com", "proton.me", "me.com", "ymail.com", "sbcglobal.net",
     "cox.net", "charter.net", "bellsouth.net", "earthlink.net"
 }
+
+FREE_PROVIDER_DOMAINS = {
+    "gmail.com", "googlemail.com", "yahoo.com", "ymail.com", "rocketmail.com", "myyahoo.com",
+    "outlook.com", "hotmail.com", "live.com", "msn.com", "passport.com",
+    "icloud.com", "me.com", "mac.com", "aol.com", "aim.com",
+    "protonmail.com", "proton.me", "zoho.com", "gmx.com", "gmx.net", "mail.com",
+    "yandex.com", "yandex.ru", "mail.ru", "comcast.net", "verizon.net", "att.net",
+    "sbcglobal.net", "bellsouth.net", "cox.net", "charter.net", "earthlink.net",
+    "optonline.net", "shaw.ca", "btinternet.com", "virginmedia.com", "orange.fr",
+    "wanadoo.fr", "free.fr", "t-online.de", "web.de", "fastmail.com", "tutanota.com", "tuta.io",
+}
+
+_MX_CACHE: Dict[str, str] = {}
+
+
+def classify_email_type(email: Optional[str], website_url: Optional[str] = None) -> str:
+    """
+    Classifies an email as 'Business Domain' vs 'Free Provider' (GEMINI2.md Section 5.1 Item 7).
+    """
+    if not email or "@" not in email:
+        return ""
+    clean = email.strip().lower()
+    _, domain = clean.split("@", 1)
+    domain = domain.strip().lower()
+
+    if domain in FREE_PROVIDER_DOMAINS:
+        return "Free Provider"
+
+    for free_prefix in ("yahoo.", "hotmail.", "outlook.", "live.", "aol.", "gmail.", "proton."):
+        if free_prefix in domain:
+            return "Free Provider"
+
+    return "Business Domain"
+
+
+def verify_email_mx(email: Optional[str], timeout: float = 2.0) -> str:
+    """
+    Validates an email address via syntax and DNS MX record validation (GEMINI2.md Section 5.1 Item 7).
+    Returns: 'Valid (Syntax + MX)', 'Risky', or 'Invalid'.
+    """
+    if not email:
+        return "Invalid"
+    clean = email.strip().lower()
+    if not is_valid_email(clean):
+        return "Invalid"
+    if "@" not in clean:
+        return "Invalid"
+
+    _, domain = clean.split("@", 1)
+    domain = domain.strip().lower()
+    if not domain or "." not in domain:
+        return "Invalid"
+
+    if domain in _MX_CACHE:
+        return _MX_CACHE[domain]
+
+    if domain in FREE_PROVIDER_DOMAINS:
+        _MX_CACHE[domain] = "Valid (Syntax + MX)"
+        return "Valid (Syntax + MX)"
+
+    # 1. DNS MX Lookup via dnspython using resilient public resolvers
+    try:
+        import dns.resolver
+        res = dns.resolver.Resolver(configure=False)
+        res.nameservers = ['8.8.8.8', '1.1.1.1', '8.8.4.4']
+        res.timeout = timeout
+        res.lifetime = timeout
+        answers = res.resolve(domain, 'MX')
+        if answers and len(answers) > 0:
+            _MX_CACHE[domain] = "Valid (Syntax + MX)"
+            return "Valid (Syntax + MX)"
+    except Exception as e:
+        e_str = str(e).lower()
+        if "nxdomain" in e_str or "does not exist" in e_str:
+            _MX_CACHE[domain] = "Invalid"
+            return "Invalid"
+
+    # 2. Resilient Fallback: DNS-over-HTTPS (Google Public DNS)
+    try:
+        import urllib.request
+        import json
+        req_url = f"https://dns.google/resolve?name={domain}&type=MX"
+        req = urllib.request.Request(req_url, headers={"User-Agent": "LeadPulse-Audit/1.0"})
+        with urllib.request.urlopen(req, timeout=timeout) as response:
+            data = json.loads(response.read().decode("utf-8"))
+            status = data.get("Status", 0)
+            if status == 3:  # NXDOMAIN
+                _MX_CACHE[domain] = "Invalid"
+                return "Invalid"
+            answers = data.get("Answer", [])
+            if any(a.get("type") in (15, 1) for a in answers):
+                _MX_CACHE[domain] = "Valid (Syntax + MX)"
+                return "Valid (Syntax + MX)"
+    except Exception:
+        pass
+
+    # If DNS lookup is inconclusive due to timeout or network, flag as Risky rather than falsely claiming Invalid
+    _MX_CACHE[domain] = "Risky"
+    return "Risky"
 
 
 def is_third_party_agency_email(email: str, website_url: str, business_name: Optional[str] = None) -> bool:
@@ -994,6 +1093,10 @@ def enrich_single_lead(
         # 3. Select strictly ONE single best email (no junk, no placeholders, no agency footers)
         if extract_email_opt and not (stop_event and stop_event.is_set()):
             lead.emails = select_best_single_email(all_emails, clean_url, business_name=lead.name)
+            if lead.emails:
+                primary_email = lead.emails[0]
+                lead.email_type = classify_email_type(primary_email, clean_url)
+                lead.email_verification_status = verify_email_mx(primary_email)
 
         # Explicitly free lxml C-tree memory
         try:

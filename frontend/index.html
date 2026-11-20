@@ -122,6 +122,9 @@
           <a href="#terminal" class="nav-item flex items-center gap-3 px-3.5 py-2.5 rounded-lg text-sm text-on-surface-variant hover:bg-surface-container hover:text-on-surface transition-all" data-target="terminal">
             <span class="material-symbols-outlined text-[20px]">terminal</span>Engine Logs
           </a>
+          <button type="button" class="nav-item w-full flex items-center gap-3 px-3.5 py-2.5 rounded-lg text-sm text-primary hover:bg-surface-container font-semibold transition-all text-left" onclick="openAgencyBrandingModal()">
+            <span class="material-symbols-outlined text-[20px] text-primary">branding_watermark</span>White-Label Studio
+          </button>
           <button type="button" id="userDashboardNavLink" class="hidden nav-item w-full flex items-center gap-3 px-3.5 py-2.5 rounded-lg text-sm text-on-surface-variant hover:bg-surface-container hover:text-on-surface transition-all text-left" onclick="openUserDashboardModal()">
             <span class="material-symbols-outlined text-[20px] text-primary">account_box</span>My Plan &amp; Usage
           </button>
@@ -185,6 +188,11 @@
         <!-- Problem Center Button -->
         <button type="button" class="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-label uppercase tracking-wider text-amber-900 bg-amber-100/80 hover:bg-amber-100 border border-amber-200/80 font-semibold shadow-sm transition-all" onclick="openProblemCenterModal()">
           <span class="material-symbols-outlined text-[16px] text-amber-700">support_agent</span>Problem Center
+        </button>
+
+        <!-- Agency White-Label Branding Button -->
+        <button type="button" class="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-label uppercase tracking-wider text-primary bg-primary-fixed/60 hover:bg-primary-fixed border border-primary/20 font-semibold shadow-2xs transition-all" onclick="openAgencyBrandingModal()">
+          <span class="material-symbols-outlined text-[16px] text-primary">branding_watermark</span>Agency Branding
         </button>
 
         <div class="h-4 w-px bg-surface-container-high"></div>
@@ -1523,6 +1531,352 @@
         <span class="text-secondary">Verified-Findings Scoring (Unverified checks excluded from denominator)</span>
         <button type="button" onclick="closeSeoAuditModal()" class="px-4 py-2 rounded-xl bg-surface-container hover:bg-surface-container-high font-semibold text-on-surface transition-colors">
           Close Report
+        </button>
+      </div>
+
+    </div>
+  </div>
+
+  <!-- Modal: Agency White-Label SEO Audit Studio & Report Builder -->
+  <div id="agencyAuditModal" class="hidden fixed inset-0 z-50 flex items-center justify-center bg-black/75 backdrop-blur-md p-3 sm:p-5 overflow-y-auto" onclick="if (event.target === this) closeAgencyAuditModal()">
+    <div class="bg-surface-container-lowest rounded-2xl max-w-5xl w-full p-5 sm:p-7 shadow-2xl border border-surface-container-high/60 flex flex-col gap-5 max-h-[94vh] overflow-y-auto">
+      
+      <!-- Studio Header -->
+      <div class="flex flex-col sm:flex-row sm:items-center justify-between gap-4 pb-4 border-b border-surface-container-high/40">
+        <div class="flex items-center gap-3.5">
+          <div class="w-11 h-11 rounded-xl bg-primary text-on-primary flex items-center justify-center shadow-md shrink-0">
+            <span class="material-symbols-outlined text-[24px]">branding_watermark</span>
+          </div>
+          <div>
+            <div class="flex items-center gap-2.5 flex-wrap">
+              <h3 class="font-headline font-bold text-lg text-on-surface" id="agencyModalBizName">Agency White-Label Audit Studio</h3>
+              <span id="agencyModalScoreBadge" class="px-2.5 py-0.5 rounded-full text-xs font-bold font-label bg-surface-container text-secondary border border-surface-container-high">Ready to Build</span>
+            </div>
+            <div class="flex items-center gap-2 text-xs text-secondary mt-0.5 flex-wrap">
+              <span id="agencyModalBizCategoryLoc">Business Lead</span>
+              <span>•</span>
+              <a href="#" target="_blank" id="agencyModalUrl" class="font-mono text-primary hover:underline flex items-center gap-0.5">
+                https://example.com <span class="material-symbols-outlined text-[13px]">north_east</span>
+              </a>
+            </div>
+          </div>
+        </div>
+
+        <div class="flex items-center gap-2">
+          <!-- Toggle Agency Branding Customizer -->
+          <button type="button" onclick="toggleAgencyBrandingPanel()" id="btnToggleBrandingPanel" class="px-3 py-1.5 rounded-xl bg-surface-container hover:bg-surface-container-high text-xs font-label font-semibold text-on-surface flex items-center gap-1.5 border border-surface-container-high transition-all" title="Customize Agency Name, Logo, Colors & Contact Info">
+            <span class="material-symbols-outlined text-[16px] text-tertiary">palette</span>
+            <span>Agency Branding</span>
+            <span class="material-symbols-outlined text-[16px] transition-transform" id="brandingChevron">expand_more</span>
+          </button>
+
+          <!-- Close Modal -->
+          <button type="button" onclick="closeAgencyAuditModal()" class="w-8 h-8 rounded-lg flex items-center justify-center text-secondary hover:text-on-surface hover:bg-surface-container transition-colors">
+            <span class="material-symbols-outlined text-[20px]">close</span>
+          </button>
+        </div>
+      </div>
+
+      <!-- Collapsible Agency Branding Drawer / Customizer -->
+      <div id="agencyBrandingPanel" class="hidden p-4 rounded-xl bg-surface-container-low border border-surface-container-high flex flex-col gap-3.5 transition-all animate-fadeIn">
+        <div class="flex items-center justify-between pb-2 border-b border-surface-container-high/40">
+          <div class="flex items-center gap-2">
+            <span class="material-symbols-outlined text-[18px] text-primary">store</span>
+            <span class="font-semibold text-xs text-on-surface font-label uppercase tracking-wider">White-Label Agency Identity &amp; Palette</span>
+          </div>
+          <span class="text-[11px] text-secondary">Branded on all generated executive summaries and client PDFs</span>
+        </div>
+
+        <div class="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-4 gap-3 text-xs font-body">
+          <div class="flex flex-col gap-1">
+            <label class="font-semibold text-secondary text-[11px]">Agency Name</label>
+            <input type="text" id="agencyBrandName" value="Apex Digital Marketing" placeholder="Your Agency Name" class="px-2.5 py-1.5 rounded-lg bg-surface-container-lowest border border-surface-container-high text-on-surface text-xs focus:ring-1 focus:ring-primary outline-none">
+          </div>
+          <div class="flex flex-col gap-1">
+            <label class="font-semibold text-secondary text-[11px]">Agency Tagline</label>
+            <input type="text" id="agencyBrandTagline" value="Data-Driven Local Growth Agency" placeholder="Local SEO & Growth Agency" class="px-2.5 py-1.5 rounded-lg bg-surface-container-lowest border border-surface-container-high text-on-surface text-xs focus:ring-1 focus:ring-primary outline-none">
+          </div>
+          <div class="flex flex-col gap-1">
+            <label class="font-semibold text-secondary text-[11px]">Agency Website</label>
+            <input type="url" id="agencyBrandWebsite" value="https://agency.com" placeholder="https://agency.com" class="px-2.5 py-1.5 rounded-lg bg-surface-container-lowest border border-surface-container-high text-on-surface text-xs focus:ring-1 focus:ring-primary outline-none">
+          </div>
+          <div class="flex flex-col gap-1">
+            <label class="font-semibold text-secondary text-[11px]">Support / Pitch Email</label>
+            <input type="email" id="agencyBrandEmail" value="hello@agency.com" placeholder="hello@agency.com" class="px-2.5 py-1.5 rounded-lg bg-surface-container-lowest border border-surface-container-high text-on-surface text-xs focus:ring-1 focus:ring-primary outline-none">
+          </div>
+        </div>
+
+        <div class="grid grid-cols-1 sm:grid-cols-3 gap-3 text-xs font-body pt-1">
+          <div class="flex flex-col gap-1">
+            <label class="font-semibold text-secondary text-[11px]">Agency Logo Image URL</label>
+            <input type="url" id="agencyBrandLogoUrl" placeholder="https://agency.com/logo.png" class="px-2.5 py-1.5 rounded-lg bg-surface-container-lowest border border-surface-container-high text-on-surface text-xs focus:ring-1 focus:ring-primary outline-none">
+          </div>
+          <div class="flex flex-col gap-1">
+            <label class="font-semibold text-secondary text-[11px]">Brand Primary Color</label>
+            <div class="flex items-center gap-2">
+              <input type="color" id="agencyBrandPrimaryColor" value="#094cb2" onchange="document.getElementById('agencyBrandPrimaryHex').value = this.value" class="w-8 h-8 rounded border border-surface-container-high cursor-pointer p-0.5">
+              <input type="text" id="agencyBrandPrimaryHex" value="#094cb2" onchange="document.getElementById('agencyBrandPrimaryColor').value = this.value" class="w-24 px-2 py-1.5 rounded-lg bg-surface-container-lowest border border-surface-container-high text-on-surface text-xs font-mono">
+            </div>
+          </div>
+          <div class="flex flex-col gap-1">
+            <label class="font-semibold text-secondary text-[11px]">Brand Accent Color</label>
+            <div class="flex items-center gap-2">
+              <input type="color" id="agencyBrandAccentColor" value="#6d5e00" onchange="document.getElementById('agencyBrandAccentHex').value = this.value" class="w-8 h-8 rounded border border-surface-container-high cursor-pointer p-0.5">
+              <input type="text" id="agencyBrandAccentHex" value="#6d5e00" onchange="document.getElementById('agencyBrandAccentColor').value = this.value" class="w-24 px-2 py-1.5 rounded-lg bg-surface-container-lowest border border-surface-container-high text-on-surface text-xs font-mono">
+            </div>
+          </div>
+        </div>
+
+        <div class="flex items-center justify-end gap-2 pt-1">
+          <button type="button" onclick="saveAgencyBrandingProfile()" class="px-3.5 py-1.5 rounded-lg bg-primary hover:bg-primary/90 text-on-primary font-semibold text-xs flex items-center gap-1 shadow-xs transition-all">
+            <span class="material-symbols-outlined text-[15px]">save</span>
+            <span>Save Branding Profile</span>
+          </button>
+        </div>
+      </div>
+
+      <!-- Audit Section Modules Selector Bar -->
+      <div class="flex flex-col gap-2.5 p-4 rounded-xl bg-surface-container/60 border border-surface-container-high/60">
+        <div class="flex items-center justify-between flex-wrap gap-2">
+          <div class="flex items-center gap-2">
+            <span class="material-symbols-outlined text-[18px] text-primary">checklist</span>
+            <span class="font-semibold text-xs text-on-surface font-label uppercase tracking-wider">Customizable Audit Scope &amp; Sections</span>
+          </div>
+          <div class="flex items-center gap-2 text-xs">
+            <button type="button" onclick="setAllAuditSections(true)" class="text-primary hover:underline font-semibold text-[11px]">Select All</button>
+            <span class="text-secondary">•</span>
+            <button type="button" onclick="setAllAuditSections(false)" class="text-secondary hover:text-on-surface text-[11px]">Clear All</button>
+          </div>
+        </div>
+
+        <!-- 6 Checkbox Modules -->
+        <div class="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-2.5 pt-1">
+          <!-- 1. Technical SEO -->
+          <label class="flex items-start gap-2.5 p-2.5 rounded-lg bg-surface-container-lowest border border-surface-container-high/80 hover:border-primary/40 cursor-pointer transition-all select-none">
+            <input type="checkbox" id="sec_website_technical_seo" checked class="mt-0.5 w-4 h-4 text-primary rounded border-outline-variant focus:ring-primary focus:ring-1">
+            <div class="flex flex-col text-xs">
+              <span class="font-semibold text-on-surface flex items-center gap-1">
+                <span class="material-symbols-outlined text-[15px] text-primary">dns</span>
+                Website Technical SEO
+              </span>
+              <span class="text-[11px] text-secondary">SSL, 301 Redirects, Canonical, Robots &amp; TTFB</span>
+            </div>
+          </label>
+
+          <!-- 2. On-Page & Local SEO -->
+          <label class="flex items-start gap-2.5 p-2.5 rounded-lg bg-surface-container-lowest border border-surface-container-high/80 hover:border-primary/40 cursor-pointer transition-all select-none">
+            <input type="checkbox" id="sec_onpage_local_seo" checked class="mt-0.5 w-4 h-4 text-primary rounded border-outline-variant focus:ring-primary focus:ring-1">
+            <div class="flex flex-col text-xs">
+              <span class="font-semibold text-on-surface flex items-center gap-1">
+                <span class="material-symbols-outlined text-[15px] text-amber-600">travel_explore</span>
+                On-Page &amp; Local SEO
+              </span>
+              <span class="text-[11px] text-secondary">Meta Title, Description, H1, Schema &amp; NAP Consistency</span>
+            </div>
+          </label>
+
+          <!-- 3. Competitor Gap Research -->
+          <label class="flex items-start gap-2.5 p-2.5 rounded-lg bg-surface-container-lowest border border-surface-container-high/80 hover:border-primary/40 cursor-pointer transition-all select-none">
+            <input type="checkbox" id="sec_competitor_research" checked class="mt-0.5 w-4 h-4 text-primary rounded border-outline-variant focus:ring-primary focus:ring-1">
+            <div class="flex flex-col text-xs">
+              <span class="font-semibold text-on-surface flex items-center gap-1">
+                <span class="material-symbols-outlined text-[15px] text-purple-600">compare_arrows</span>
+                Competitor Gap Research
+              </span>
+              <span class="text-[11px] text-secondary">Top 3 Local Competitor Comparison &amp; Trailing Gaps</span>
+            </div>
+          </label>
+
+          <!-- 4. PageSpeed & Mobile Experience -->
+          <label class="flex items-start gap-2.5 p-2.5 rounded-lg bg-surface-container-lowest border border-surface-container-high/80 hover:border-primary/40 cursor-pointer transition-all select-none">
+            <input type="checkbox" id="sec_pagespeed_mobile" checked class="mt-0.5 w-4 h-4 text-primary rounded border-outline-variant focus:ring-primary focus:ring-1">
+            <div class="flex flex-col text-xs">
+              <span class="font-semibold text-on-surface flex items-center gap-1">
+                <span class="material-symbols-outlined text-[15px] text-blue-600">speed</span>
+                PageSpeed &amp; Mobile
+              </span>
+              <span class="text-[11px] text-secondary">Google PageSpeed Insights &amp; Core Web Vitals (LCP/CLS)</span>
+            </div>
+          </label>
+
+          <!-- 5. Tracking & Marketing Analytics -->
+          <label class="flex items-start gap-2.5 p-2.5 rounded-lg bg-surface-container-lowest border border-surface-container-high/80 hover:border-primary/40 cursor-pointer transition-all select-none">
+            <input type="checkbox" id="sec_ads_tracking" checked class="mt-0.5 w-4 h-4 text-primary rounded border-outline-variant focus:ring-primary focus:ring-1">
+            <div class="flex flex-col text-xs">
+              <span class="font-semibold text-on-surface flex items-center gap-1">
+                <span class="material-symbols-outlined text-[15px] text-emerald-600">query_stats</span>
+                Tracking &amp; Analytics
+              </span>
+              <span class="text-[11px] text-secondary">GA4, Tag Manager, Meta Pixel, Clarity &amp; Ads Tags</span>
+            </div>
+          </label>
+
+          <!-- 6. Content & Inner Pages -->
+          <label class="flex items-start gap-2.5 p-2.5 rounded-lg bg-surface-container-lowest border border-surface-container-high/80 hover:border-primary/40 cursor-pointer transition-all select-none">
+            <input type="checkbox" id="sec_inner_pages" checked class="mt-0.5 w-4 h-4 text-primary rounded border-outline-variant focus:ring-primary focus:ring-1">
+            <div class="flex flex-col text-xs">
+              <span class="font-semibold text-on-surface flex items-center gap-1">
+                <span class="material-symbols-outlined text-[15px] text-indigo-600">article</span>
+                Content &amp; Inner Pages
+              </span>
+              <span class="text-[11px] text-secondary">Service Pages, Location Hubs &amp; Content Freshness</span>
+            </div>
+          </label>
+        </div>
+      </div>
+
+      <!-- Action Buttons Bar -->
+      <div class="flex flex-wrap items-center justify-between gap-3 pt-1">
+        <div class="flex items-center gap-2.5 flex-wrap">
+          <!-- Generate Report Button -->
+          <button type="button" id="btnGenerateAgencyReport" onclick="generateAgencyReport()" class="px-4 py-2.5 rounded-xl bg-primary hover:bg-primary/90 text-on-primary font-semibold text-xs flex items-center gap-2 shadow-md hover:shadow-lg transition-all cursor-pointer">
+            <span class="material-symbols-outlined text-[18px]">auto_awesome</span>
+            <span id="btnGenerateReportText">Generate Client-Ready AI Audit</span>
+          </button>
+
+          <!-- Download PDF Button -->
+          <button type="button" id="btnExportAgencyPdf" onclick="exportAgencyPdf()" class="px-4 py-2.5 rounded-xl bg-primary-fixed hover:bg-primary-fixed-dim text-on-primary-fixed font-semibold text-xs flex items-center gap-2 shadow-xs transition-all cursor-pointer">
+            <span class="material-symbols-outlined text-[18px]">picture_as_pdf</span>
+            <span id="btnExportPdfText">Download White-Label PDF</span>
+          </button>
+
+          <!-- Copy Executive Summary Button -->
+          <button type="button" id="btnCopyExecutiveSummary" onclick="copyAgencyExecutiveSummary()" class="px-3.5 py-2.5 rounded-xl bg-surface-container hover:bg-surface-container-high text-on-surface font-semibold text-xs flex items-center gap-1.5 border border-surface-container-high transition-all cursor-pointer">
+            <span class="material-symbols-outlined text-[16px]">content_copy</span>
+            <span id="copyExecutiveSummaryLabel">Copy Executive Summary</span>
+          </button>
+        </div>
+
+        <div class="text-[11px] text-secondary font-mono flex items-center gap-1">
+          <span class="material-symbols-outlined text-[14px] text-emerald-600">verified_user</span>
+          <span>Zero Browser • Evidence-Backed</span>
+        </div>
+      </div>
+
+      <!-- Generated Report Canvas -->
+      <div id="agencyReportCanvas" class="flex flex-col gap-4 overflow-y-auto pr-1">
+        <!-- Initial Blank State -->
+        <div class="p-8 rounded-2xl bg-surface-container-low border border-dashed border-surface-container-high flex flex-col items-center justify-center text-center gap-3">
+          <div class="w-14 h-14 rounded-2xl bg-primary-fixed/40 text-primary flex items-center justify-center shadow-xs">
+            <span class="material-symbols-outlined text-[32px]">auto_awesome</span>
+          </div>
+          <div>
+            <h4 class="font-headline font-bold text-sm text-on-surface">Ready to Generate Client Audit</h4>
+            <p class="text-xs text-secondary mt-1 max-w-md">
+              Select the audit sections above and click <strong>"Generate Client-Ready AI Audit"</strong> to build an evidence-backed report, prioritized roadmap, and white-label PDF.
+            </p>
+          </div>
+        </div>
+      </div>
+
+      <!-- Modal Footer -->
+      <div class="flex items-center justify-between pt-3 border-t border-surface-container-high/40 text-xs text-secondary">
+        <span id="agencyFooterBrandingText">White-Label Report Engine • Apex Digital Marketing</span>
+        <button type="button" onclick="closeAgencyAuditModal()" class="px-4 py-2 rounded-xl bg-surface-container hover:bg-surface-container-high font-semibold text-on-surface transition-colors">
+          Close Studio
+        </button>
+      </div>
+
+    </div>
+  </div>
+
+  <!-- Modal: Standalone Agency Branding Profile Studio -->
+  <div id="agencyBrandingModal" class="hidden fixed inset-0 z-50 flex items-center justify-center bg-black/70 backdrop-blur-sm p-4 overflow-y-auto" onclick="if (event.target === this) closeAgencyBrandingModal()">
+    <div class="bg-surface-container-lowest rounded-2xl max-w-2xl w-full p-6 shadow-2xl border border-surface-container-high/60 flex flex-col gap-5 max-h-[90vh] overflow-y-auto">
+      
+      <div class="flex items-center justify-between pb-3 border-b border-surface-container-high/40">
+        <div class="flex items-center gap-3">
+          <div class="w-10 h-10 rounded-xl bg-primary text-on-primary flex items-center justify-center shadow-xs">
+            <span class="material-symbols-outlined text-[22px]">branding_watermark</span>
+          </div>
+          <div>
+            <h3 class="font-headline font-bold text-base text-on-surface">Agency White-Label Profile Studio</h3>
+            <p class="text-xs text-secondary">Configure agency identity, colors, and logos for all PDF reports.</p>
+          </div>
+        </div>
+
+        <button type="button" onclick="closeAgencyBrandingModal()" class="w-8 h-8 rounded-lg flex items-center justify-center text-secondary hover:text-on-surface hover:bg-surface-container transition-colors">
+          <span class="material-symbols-outlined text-[18px]">close</span>
+        </button>
+      </div>
+
+      <div class="flex flex-col gap-3.5 text-xs font-body">
+        <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
+          <div class="flex flex-col gap-1">
+            <label class="font-semibold text-secondary text-[11px]">Agency Legal / Trading Name</label>
+            <input type="text" id="brandModalName" value="Apex Digital Marketing" class="px-3 py-2 rounded-lg bg-surface-container-low border border-surface-container-high text-on-surface text-xs focus:ring-1 focus:ring-primary outline-none">
+          </div>
+          <div class="flex flex-col gap-1">
+            <label class="font-semibold text-secondary text-[11px]">Tagline / Subheading</label>
+            <input type="text" id="brandModalTagline" value="Data-Driven Local Growth Agency" class="px-3 py-2 rounded-lg bg-surface-container-low border border-surface-container-high text-on-surface text-xs focus:ring-1 focus:ring-primary outline-none">
+          </div>
+        </div>
+
+        <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
+          <div class="flex flex-col gap-1">
+            <label class="font-semibold text-secondary text-[11px]">Agency Official Website</label>
+            <input type="url" id="brandModalWebsite" value="https://agency.com" class="px-3 py-2 rounded-lg bg-surface-container-low border border-surface-container-high text-on-surface text-xs focus:ring-1 focus:ring-primary outline-none">
+          </div>
+          <div class="flex flex-col gap-1">
+            <label class="font-semibold text-secondary text-[11px]">Contact &amp; Pitch Email</label>
+            <input type="email" id="brandModalEmail" value="hello@agency.com" class="px-3 py-2 rounded-lg bg-surface-container-low border border-surface-container-high text-on-surface text-xs focus:ring-1 focus:ring-primary outline-none">
+          </div>
+        </div>
+
+        <div class="flex flex-col gap-1">
+          <label class="font-semibold text-secondary text-[11px]">Agency Logo Direct Image URL</label>
+          <input type="url" id="brandModalLogoUrl" placeholder="https://agency.com/assets/logo.png" class="px-3 py-2 rounded-lg bg-surface-container-low border border-surface-container-high text-on-surface text-xs focus:ring-1 focus:ring-primary outline-none">
+        </div>
+
+        <div class="grid grid-cols-1 sm:grid-cols-2 gap-3 pt-1">
+          <div class="p-3 rounded-xl bg-surface-container-low border border-surface-container-high flex items-center justify-between">
+            <div>
+              <span class="font-semibold text-on-surface block">Primary Brand Color</span>
+              <span class="text-[11px] text-secondary">Covers, headers &amp; key highlights</span>
+            </div>
+            <div class="flex items-center gap-2">
+              <input type="color" id="brandModalPrimaryColor" value="#094cb2" onchange="document.getElementById('brandModalPrimaryHex').value = this.value" class="w-8 h-8 rounded border border-surface-container-high cursor-pointer p-0.5">
+              <input type="text" id="brandModalPrimaryHex" value="#094cb2" onchange="document.getElementById('brandModalPrimaryColor').value = this.value" class="w-20 px-2 py-1 rounded bg-surface-container-lowest border border-surface-container-high text-xs font-mono">
+            </div>
+          </div>
+
+          <div class="p-3 rounded-xl bg-surface-container-low border border-surface-container-high flex items-center justify-between">
+            <div>
+              <span class="font-semibold text-on-surface block">Accent Brand Color</span>
+              <span class="text-[11px] text-secondary">Badges, callouts &amp; metrics</span>
+            </div>
+            <div class="flex items-center gap-2">
+              <input type="color" id="brandModalAccentColor" value="#6d5e00" onchange="document.getElementById('brandModalAccentHex').value = this.value" class="w-8 h-8 rounded border border-surface-container-high cursor-pointer p-0.5">
+              <input type="text" id="brandModalAccentHex" value="#6d5e00" onchange="document.getElementById('brandModalAccentColor').value = this.value" class="w-20 px-2 py-1 rounded bg-surface-container-lowest border border-surface-container-high text-xs font-mono">
+            </div>
+          </div>
+        </div>
+
+        <!-- Live Preview Card -->
+        <div class="mt-2 p-4 rounded-xl bg-surface-container border border-surface-container-high flex flex-col gap-2">
+          <span class="font-label text-[10px] uppercase font-bold text-secondary tracking-wider">PDF Cover Header Preview</span>
+          <div class="p-3 rounded-lg bg-surface-container-lowest border border-surface-container-high flex items-center justify-between">
+            <div class="flex items-center gap-3">
+              <div class="w-8 h-8 rounded bg-primary text-white flex items-center justify-center font-bold text-xs" id="brandPreviewBadge">
+                A
+              </div>
+              <div>
+                <span class="font-bold text-xs text-on-surface block" id="brandPreviewName">Apex Digital Marketing</span>
+                <span class="text-[10px] text-secondary" id="brandPreviewTagline">Data-Driven Local Growth Agency</span>
+              </div>
+            </div>
+            <span class="text-[10px] font-mono text-secondary" id="brandPreviewSite">agency.com</span>
+          </div>
+        </div>
+      </div>
+
+      <div class="flex items-center justify-end gap-3 pt-3 border-t border-surface-container-high/40">
+        <button type="button" onclick="closeAgencyBrandingModal()" class="px-4 py-2 rounded-xl bg-surface-container hover:bg-surface-container-high text-xs font-semibold text-on-surface transition-colors">
+          Cancel
+        </button>
+        <button type="button" onclick="saveStandaloneAgencyBranding()" class="px-4 py-2 rounded-xl bg-primary hover:bg-primary/90 text-on-primary text-xs font-semibold flex items-center gap-1.5 shadow-sm transition-all">
+          <span class="material-symbols-outlined text-[16px]">check</span>
+          <span>Save Agency Profile</span>
         </button>
       </div>
 

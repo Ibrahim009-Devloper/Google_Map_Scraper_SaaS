@@ -9,12 +9,14 @@ Generates publication-ready spreadsheets featuring:
 """
 
 import io
-from typing import List, Optional
+import re
+from typing import List, Optional, Dict
 import openpyxl
 from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
 from openpyxl.utils import get_column_letter
 
 from agent.schemas import LeadItem
+from agent.web_enricher import classify_email_type, verify_email_mx
 
 
 def generate_leads_excel(
@@ -48,6 +50,46 @@ def generate_leads_excel(
     ws.title = "Verified Leads"
     ws.views.sheetView[0].showGridLines = True
 
+    # Track shared contacts across the lead batch (GEMINI2.md Section 5.1 Item 5)
+    phone_counts: Dict[str, int] = {}
+    email_counts: Dict[str, int] = {}
+    for l in leads:
+        clean_p = re.sub(r"\D", "", l.phone or "")
+        if len(clean_p) >= 7:
+            phone_counts[clean_p] = phone_counts.get(clean_p, 0) + 1
+        for e in l.emails:
+            clean_e = e.strip().lower()
+            if clean_e:
+                email_counts[clean_e] = email_counts.get(clean_e, 0) + 1
+
+    def get_shared_contact_flag(l: LeadItem) -> str:
+        if getattr(l, "shared_contact_flag", "") in ("Yes — Shared Email/Phone", "Yes"):
+            return "Yes — Shared Email/Phone"
+        clean_p = re.sub(r"\D", "", l.phone or "")
+        if len(clean_p) >= 7 and phone_counts.get(clean_p, 0) > 1:
+            return "Yes — Shared Email/Phone"
+        for e in l.emails:
+            clean_e = e.strip().lower()
+            if clean_e and email_counts.get(clean_e, 0) > 1:
+                return "Yes — Shared Email/Phone"
+        return "No"
+
+    def get_email_type(l: LeadItem) -> str:
+        existing = getattr(l, "email_type", None)
+        if existing:
+            return existing
+        if l.emails:
+            return classify_email_type(l.emails[0], l.website_url)
+        return ""
+
+    def get_email_status(l: LeadItem) -> str:
+        existing = getattr(l, "email_verification_status", None)
+        if existing:
+            return existing
+        if l.emails:
+            return verify_email_mx(l.emails[0])
+        return ""
+
     # Base Google Maps Columns (always present)
     columns = [
         ("Business Name", lambda l: l.name, 28, "left"),
@@ -55,17 +97,21 @@ def generate_leads_excel(
         ("Phone Number", lambda l: l.phone or "", 18, "center"),
     ]
 
-    # Only include Emails if website enrichment was performed
+    # Only include Emails & honest email verification if website enrichment was performed
     if include_enrichment:
-        columns.append(("Emails", lambda l: "; ".join(l.emails) if l.emails else "", 28, "left"))
+        columns.extend([
+            ("Emails", lambda l: "; ".join(l.emails) if l.emails else "", 28, "left"),
+            ("Email Type", get_email_type, 18, "center"),
+            ("Email Verification Status", get_email_status, 24, "center"),
+        ])
 
     columns.extend([
         ("Website Status", lambda l: l.website_status, 16, "center"),
         ("Website URL", lambda l: l.website_url or "", 26, "left"),
         ("Rating", lambda l: l.rating if l.rating is not None else "", 10, "center"),
         ("Reviews Count", lambda l: l.reviews_count, 14, "center"),
-        ("Price Range", lambda l: l.price_range or "", 12, "center"),
         ("Unclaimed Business", lambda l: "Yes" if l.is_unclaimed_business else "No", 18, "center"),
+        ("Shared Contact Flag", get_shared_contact_flag, 24, "center"),
         ("Neighborhood", lambda l: l.neighborhood or "", 18, "left"),
         ("Full Address", lambda l: l.address or "", 36, "left"),
     ])

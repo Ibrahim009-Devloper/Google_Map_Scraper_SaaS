@@ -3,7 +3,7 @@ Pydantic data models and schemas for the Local SEO Audit Engine.
 """
 
 import re
-from typing import Optional, Dict, List, Literal
+from typing import Optional, Dict, List, Literal, Any
 from pydantic import BaseModel, Field
 
 AuditStatus = Literal["Pass", "Warning", "Fail", "Unverified"]
@@ -161,5 +161,129 @@ class SEOReport(BaseModel):
     is_js_rendered: bool = False
     audited_page_type: str = "homepage"
     issues: Dict[str, AuditIssue] = Field(default_factory=dict)
-    xlsx_row_data: Dict[str, str] = Field(default_factory=dict)
+    xlsx_row_data: Dict[str, Any] = Field(default_factory=dict)
     error_message: Optional[str] = None
+
+
+class AuditSectionConfig(BaseModel):
+    """Flags for enabling/disabling individual audit sections in the report."""
+    technical_seo: bool = Field(default=True, alias="website_technical_seo")
+    onpage_seo: bool = Field(default=True, alias="onpage_local_seo")
+    competitor_research: bool = True
+    pagespeed_mobile: bool = True
+    ads_tracking: bool = True
+    inner_pages: bool = True
+
+    model_config = {
+        "populate_by_name": True
+    }
+
+
+class AgencyBranding(BaseModel):
+    """Agency branding details for white-label reports and PDFs."""
+    agency_name: str = "Apex Digital Marketing"
+    logo_url: Optional[str] = None
+    tagline: Optional[str] = "Professional Local SEO & Digital Growth Agency"
+    primary_color: str = "#2563EB"
+    accent_color: str = "#10B981"
+    contact_email: Optional[str] = "contact@agency.com"
+    website: Optional[str] = "https://agency.com"
+    phone: Optional[str] = None
+
+
+class CompetitorComparison(BaseModel):
+    """Structured side-by-side local competitor metric snapshot."""
+    business_name: str
+    place_id: Optional[str] = None
+    rating: Optional[float] = None
+    reviews_count: Optional[int] = None
+    seo_score: Optional[int] = None
+    pagespeed_score: Optional[int] = None
+    has_schema: Optional[bool] = None
+    has_nap: Optional[bool] = None
+    has_tracking: Optional[bool] = None
+    trailing_gaps: List[str] = Field(default_factory=list)
+
+
+class PageSpeedResult(BaseModel):
+    """Google PageSpeed Insights score and Web Vitals metrics."""
+    mobile_score: Optional[int] = None
+    desktop_score: Optional[int] = None
+    lcp_seconds: Optional[float] = None
+    cls_value: Optional[float] = None
+    inp_ms: Optional[float] = None
+    fcp_seconds: Optional[float] = None
+    mobile_friendly_status: str = "Not Checked"
+    screenshot_url: Optional[str] = None
+    status: str = "Unavailable"  # e.g., "Pass", "Warning", "Critical", "Unavailable", "Not Checked"
+    details: str = ""
+
+
+class ActionPlanItem(BaseModel):
+    """Prioritized action item for client roadmap."""
+    title: str
+    timeframe: Literal["Quick Win (1-7 Days)", "Medium-Term (2-4 Weeks)", "Long-Term (1-3 Months)"] = "Quick Win (1-7 Days)"
+    priority: Literal["Critical", "High", "Medium", "Low"] = "High"
+    category: str = "Technical SEO"
+    impact: str = "Immediate SEO improvement"
+    description: str = ""
+
+
+class AIAuditReport(BaseModel):
+    """Full grounded, evidence-backed agency AI audit report."""
+    business_name: str
+    category: str = ""
+    website_url: str = ""
+    audited_url: str = ""
+    location: str = ""
+    audit_date: str = ""
+    seo_health_score: Optional[int] = None
+    audit_scope: List[str] = Field(default_factory=list)
+    executive_summary: str = ""
+    critical_issues: List[str] = Field(default_factory=list)
+    warnings: List[str] = Field(default_factory=list)
+    passed_checks: List[str] = Field(default_factory=list)
+    plain_english_explanations: List[Dict[str, str]] = Field(default_factory=list)
+    action_plan: List[ActionPlanItem] = Field(default_factory=list)
+    competitor_analysis: Optional[str] = None
+    competitors: List[CompetitorComparison] = Field(default_factory=list)
+    pagespeed_data: Optional[PageSpeedResult] = None
+    data_limitations: List[str] = Field(default_factory=list)
+    branding: Optional[AgencyBranding] = None
+    raw_seo_report: Optional[SEOReport] = None
+
+
+class GenerateReportRequest(BaseModel):
+    audit_input: Optional[AuditInput] = None
+    url: Optional[str] = None
+    business_name: Optional[str] = None
+    category: Optional[str] = None
+    city: Optional[str] = None
+    target_city: Optional[str] = None
+    phone: Optional[str] = None
+    address: Optional[str] = None
+    rating: Optional[float] = None
+    reviews_count: Optional[int] = None
+    job_id: Optional[str] = None
+    place_id: Optional[str] = None
+    sections: Optional[AuditSectionConfig] = Field(default_factory=AuditSectionConfig)
+    branding: Optional[AgencyBranding] = None
+
+
+class ExportPdfRequest(BaseModel):
+    audit_input: Optional[AuditInput] = None
+    url: Optional[str] = None
+    business_name: Optional[str] = None
+    category: Optional[str] = None
+    city: Optional[str] = None
+    target_city: Optional[str] = None
+    phone: Optional[str] = None
+    address: Optional[str] = None
+    rating: Optional[float] = None
+    reviews_count: Optional[int] = None
+    job_id: Optional[str] = None
+    place_id: Optional[str] = None
+    sections: Optional[AuditSectionConfig] = Field(default_factory=AuditSectionConfig)
+    branding: Optional[AgencyBranding] = None
+    report_data: Optional[AIAuditReport] = None
+

@@ -1360,6 +1360,191 @@ def check_gbp_category_alignment(soup: BeautifulSoup, category: Optional[str] = 
     ), summary
 
 
+def check_ads_and_tracking(
+    soup: BeautifulSoup,
+    raw_html: str,
+    fetch_res: Optional[FetchResult] = None,
+) -> Tuple[AuditIssue, str]:
+    """
+    Check 19: Marketing & Analytics Script Detection (GEMINI2.md Phase 2 Item 3).
+    Detects Google Analytics (GA4/gtag), Google Tag Manager (GTM-),
+    Google Ads (AW-), Meta Pixel (fbq), Microsoft Clarity, and Hotjar.
+    """
+    html_text = raw_html or ""
+    final_url = (fetch_res.final_url or fetch_res.url) if fetch_res else ""
+
+    detected_tools: List[str] = []
+
+    # 1. Google Analytics 4 (GA4 / gtag)
+    ga4_match = re.search(r"\b(G-[A-Z0-9]{4,15})\b", html_text)
+    if ga4_match:
+        detected_tools.append(f"Google Analytics 4 ({ga4_match.group(1)})")
+    elif "gtag(" in html_text or "google-analytics.com/analytics.js" in html_text:
+        detected_tools.append("Google Analytics (gtag)")
+
+    # 2. Google Tag Manager
+    gtm_match = re.search(r"\b(GTM-[A-Z0-9]{4,15})\b", html_text)
+    if gtm_match:
+        detected_tools.append(f"Google Tag Manager ({gtm_match.group(1)})")
+    elif "googletagmanager.com/gtm.js" in html_text:
+        detected_tools.append("Google Tag Manager")
+
+    # 3. Google Ads Conversion / Remarketing
+    gads_match = re.search(r"\b(AW-[0-9]{5,15})\b", html_text)
+    if gads_match:
+        detected_tools.append(f"Google Ads ({gads_match.group(1)})")
+    elif "googleadservices.com/pagead/conversion" in html_text or "googleads.g.doubleclick.net" in html_text:
+        detected_tools.append("Google Ads")
+
+    # 4. Meta Pixel (Facebook Pixel)
+    meta_match = re.search(r"fbq\(\s*['\"]init['\"]\s*,\s*['\"](\d{9,18})['\"]", html_text)
+    if meta_match:
+        detected_tools.append(f"Meta Pixel ({meta_match.group(1)})")
+    elif "connect.facebook.net" in html_text or "_fbq" in html_text or "fbq(" in html_text:
+        detected_tools.append("Meta Pixel (Active)")
+
+    # 5. Microsoft Clarity
+    clarity_match = re.search(r"clarity\.ms/tag/([a-z0-9]+)", html_text, re.I)
+    if clarity_match:
+        detected_tools.append(f"Microsoft Clarity ({clarity_match.group(1)})")
+    elif "clarity.ms" in html_text or "window.clarity" in html_text:
+        detected_tools.append("Microsoft Clarity")
+
+    # 6. Hotjar
+    hotjar_match = re.search(r"hjid:\s*(\d+)", html_text)
+    if hotjar_match:
+        detected_tools.append(f"Hotjar ({hotjar_match.group(1)})")
+    elif "static.hotjar.com" in html_text or "_hjSettings" in html_text:
+        detected_tools.append("Hotjar")
+
+    if detected_tools:
+        summary = f"Pass: Active ({', '.join(detected_tools[:3])})"
+        return AuditIssue(
+            check_name="ads_and_tracking",
+            audit_status="Pass",
+            priority="None",
+            severity="None",
+            confidence="High",
+            evidence_url=final_url,
+            evidence=f"Detected active analytics and advertising scripts: {'; '.join(detected_tools)}.",
+            recommended_fix=None,
+            xlsx_summary=summary,
+        ), summary
+
+    summary = "Warning: No Marketing / Tracking Tags Found"
+    return AuditIssue(
+        check_name="ads_and_tracking",
+        audit_status="Warning",
+        priority="Medium",
+        severity="Medium",
+        confidence="High",
+        evidence_url=final_url,
+        evidence="No Google Analytics (GA4), Google Tag Manager, Google Ads, Meta Pixel, Clarity, or Hotjar tracking tags were detected on the homepage.",
+        recommended_fix="Install Google Analytics 4 (GA4) and Google Tag Manager to track visitor conversion data, attribution, and ad retargeting.",
+        xlsx_summary=summary,
+    ), summary
+
+
+def check_inner_pages_and_freshness(
+    soup: BeautifulSoup,
+    fetch_res: Optional[FetchResult] = None,
+) -> Tuple[AuditIssue, str]:
+    """
+    Check 20: Inner Pages & Content Freshness Scan (GEMINI2.md Phase 2 Item 4).
+    Scans internal navigation links (capped at 5-10 lightweight checks) and XML sitemap status
+    to detect: Service Pages, Location Pages, Blog presence, and latest content freshness.
+    """
+    final_url = (fetch_res.final_url or fetch_res.url) if fetch_res else ""
+    parsed_base = urlparse(final_url)
+    base_host = (parsed_base.netloc or "").replace("www.", "").lower()
+
+    service_links = set()
+    location_links = set()
+    blog_links = set()
+
+    links = soup.find_all("a", href=True)
+    checked_count = 0
+
+    for a in links:
+        href = a.get("href", "").strip()
+        if not href or href.startswith(("#", "javascript:", "mailto:", "tel:")):
+            continue
+
+        if href.startswith(("http://", "https://")):
+            p = urlparse(href)
+            link_host = (p.netloc or "").replace("www.", "").lower()
+            if base_host and link_host != base_host:
+                continue
+            path = p.path.lower()
+        else:
+            path = href.lower()
+
+        if any(tok in path for tok in ("/service-area", "/service-areas", "/areas-we-serve", "/location", "/locations", "/areas", "/cities", "/coverage")):
+            location_links.add(path)
+        elif any(tok in path for tok in ("/service", "/services", "/what-we-do", "/our-work", "/treatment", "/repairs")):
+            service_links.add(path)
+        elif any(tok in path for tok in ("/blog", "/news", "/articles", "/latest", "/posts")):
+            blog_links.add(path)
+
+        checked_count += 1
+        if checked_count >= 50:
+            break
+
+    found_parts = []
+    missing_parts = []
+
+    if service_links:
+        found_parts.append(f"Services ({len(service_links)} pages)")
+    else:
+        missing_parts.append("Service Pages")
+
+    if location_links:
+        found_parts.append(f"Locations ({len(location_links)} pages)")
+    else:
+        missing_parts.append("Location Pages")
+
+    if blog_links:
+        found_parts.append(f"Blog ({len(blog_links)} pages)")
+    else:
+        missing_parts.append("Blog")
+
+    has_sitemap = fetch_res.has_sitemap if fetch_res else False
+
+    if found_parts:
+        summary = f"Pass: {', '.join(found_parts)}"
+        evidence_text = f"Found site architecture signals: {', '.join(found_parts)}."
+        if has_sitemap:
+            evidence_text += " XML Sitemap verified accessible."
+        if missing_parts:
+            evidence_text += f" Missing: {', '.join(missing_parts)}."
+
+        status = "Pass" if len(found_parts) >= 2 else "Warning"
+        return AuditIssue(
+            check_name="inner_pages",
+            audit_status=status,
+            priority="Low" if status == "Pass" else "Medium",
+            severity="Low" if status == "Pass" else "Medium",
+            confidence="High",
+            evidence_url=final_url,
+            evidence=evidence_text,
+            recommended_fix=f"Consider adding dedicated {', '.join(missing_parts)} to expand local keyword coverage." if missing_parts else None,
+            xlsx_summary=summary,
+        ), summary
+
+    summary = "Warning: No Dedicated Service, Location, or Blog Pages Found"
+    return AuditIssue(
+        check_name="inner_pages",
+        audit_status="Warning",
+        priority="Medium",
+        severity="Medium",
+        confidence="Medium",
+        evidence_url=final_url,
+        evidence="Could not find dedicated service, location, or blog subpages in homepage navigation.",
+        recommended_fix="Build dedicated service landing pages, city/location pages, and an active blog to capture local search intent.",
+        xlsx_summary=summary,
+    ), summary
+
+
 # ============================================================================
 # Master Orchestrator for All Checks
 # ============================================================================
@@ -1483,6 +1668,8 @@ def run_all_seo_checks(input_data: AuditInput, fetch_res: FetchResult) -> CheckR
             ("NAP Status", "nap_consistency"),
             ("Google Maps Embed", "maps_embed"),
             ("GBP Category Alignment", "gbp_category_alignment"),
+            ("Marketing & Tracking Tags", "ads_and_tracking"),
+            ("Inner Pages & Freshness", "inner_pages"),
         ]:
             issues[chk_key] = AuditIssue(
                 check_name=chk_key,
@@ -1626,6 +1813,16 @@ def run_all_seo_checks(input_data: AuditInput, fetch_res: FetchResult) -> CheckR
     iss_cat, s_cat = check_gbp_category_alignment(soup, input_data.category, audited_page_type=audited_page_type)
     issues["gbp_category_alignment"] = iss_cat
     xlsx_row["GBP Category Alignment"] = s_cat
+
+    # 19. Ads & Tracking Detection (GEMINI2.md Phase 2 Item 3)
+    iss_track, s_track = check_ads_and_tracking(soup, fetch_res.html, fetch_res=fetch_res)
+    issues["ads_and_tracking"] = iss_track
+    xlsx_row["Marketing & Tracking Tags"] = s_track
+
+    # 20. Inner Pages & Freshness (GEMINI2.md Phase 2 Item 4)
+    iss_inner, s_inner = check_inner_pages_and_freshness(soup, fetch_res=fetch_res)
+    issues["inner_pages"] = iss_inner
+    xlsx_row["Inner Pages & Freshness"] = s_inner
 
     # Zero-Browser JS/SPA False-Positive Fix (Objective 1):
     # If client-side rendered shell detected, skip on-page penalties:

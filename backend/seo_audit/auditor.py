@@ -201,9 +201,9 @@ def audit_single_business(
             xlsx_row["SEO Opportunity Score"] = "N/A (JS-Rendered)"
             opp_score = None
         elif health_score is not None:
-            xlsx_row["SEO Health Score"] = f"{health_score}/100"
+            xlsx_row["SEO Health Score"] = health_score
             opp_score = 100 - health_score
-            xlsx_row["SEO Opportunity Score"] = f"{opp_score}/100"
+            xlsx_row["SEO Opportunity Score"] = opp_score
         else:
             default_score_str = "Not Tested" if pitch_priority == "Not Tested" else "N/A"
             xlsx_row["SEO Health Score"] = default_score_str

@@ -97,6 +97,7 @@ document.addEventListener("DOMContentLoaded", async () => {
   checkServerHealth();
   await initSupabaseClient();
   updateAuthUI();
+  loadAgencyBrandingProfile();
 
   // Show "Login for More Scrape" popup when user enters the page if not authenticated
   if (!authToken) {
@@ -1209,7 +1210,7 @@ function renderLeadsFeed() {
     const initials = getInitials(lead.name);
     const colorClass = getInitialColor(lead.name);
 
-    // Format website link & on-demand Page SEO button
+    // Format website link & on-demand Page SEO & Agency White-Label button
     let websiteBadge = "";
     if (lead.website_status === "Has Own Website" && lead.website_url) {
       const domain = cleanDomain(lead.website_url);
@@ -1233,6 +1234,38 @@ function renderLeadsFeed() {
              <span>Page SEO</span>
            </button>`;
 
+      const agencyAuditBtn = `<button type="button" onclick="event.stopPropagation(); openAgencyAuditModal('${lead.place_id}')" class="px-2 py-0.5 rounded text-[10px] font-bold font-label bg-primary hover:bg-primary-container text-on-primary flex items-center gap-1 shadow-2xs transition-all cursor-pointer" title="Open Agency White-Label Audit Studio & PDF Builder">
+        <span class="material-symbols-outlined text-[12px]">picture_as_pdf</span>
+        <span>Agency Audit &amp; PDF</span>
+      </button>`;
+
+      // Quick summary pills for PageSpeed and Competitors
+      let extraPillsHtml = "";
+      const psScore = (lead.pagespeed_score !== undefined && lead.pagespeed_score !== null)
+        ? lead.pagespeed_score
+        : (lead.pagespeed && (lead.pagespeed.mobile_score || lead.pagespeed.score));
+      if (psScore !== undefined && psScore !== null) {
+        let psBadgeColor = "bg-blue-50 text-blue-700 border-blue-200";
+        if (psScore >= 80) psBadgeColor = "bg-emerald-50 text-emerald-800 border-emerald-200";
+        else if (psScore < 50) psBadgeColor = "bg-rose-50 text-rose-800 border-rose-200";
+        extraPillsHtml += `
+          <span class="px-1.5 py-0.5 rounded text-[10px] font-semibold font-label ${psBadgeColor} border flex items-center gap-0.5" title="Mobile PageSpeed: ${psScore}/100">
+            <span class="material-symbols-outlined text-[11px]">speed</span>
+            PageSpeed: ${psScore}
+          </span>
+        `;
+      }
+
+      const compGaps = lead.competitor_gaps || (lead.competitors && lead.competitors.length > 0 ? lead.competitors : null);
+      if (compGaps && compGaps.length > 0) {
+        extraPillsHtml += `
+          <span class="px-1.5 py-0.5 rounded text-[10px] font-semibold font-label bg-purple-50 text-purple-800 border border-purple-200 flex items-center gap-0.5" title="Local Competitor Gap Research Available">
+            <span class="material-symbols-outlined text-[11px]">compare_arrows</span>
+            Top 3 Competitor Gaps
+          </span>
+        `;
+      }
+
       websiteBadge = `
         <div class="flex items-center gap-1.5 flex-wrap">
           <a href="${lead.website_url}" target="_blank" onclick="event.stopPropagation()" class="text-xs font-label text-primary hover:underline flex items-center gap-0.5">
@@ -1240,12 +1273,30 @@ function renderLeadsFeed() {
             <span class="material-symbols-outlined text-[12px]">north_east</span>
           </a>
           ${seoBadgeHtml}
+          ${agencyAuditBtn}
+          ${extraPillsHtml}
         </div>
       `;
     } else if (lead.website_status === "Social Link Only") {
-      websiteBadge = `<span class="px-2 py-0.5 rounded text-[10px] font-label font-semibold bg-tertiary-fixed text-on-tertiary-fixed">Social Link Only</span>`;
+      websiteBadge = `
+        <div class="flex items-center gap-1.5 flex-wrap">
+          <span class="px-2 py-0.5 rounded text-[10px] font-label font-semibold bg-tertiary-fixed text-on-tertiary-fixed">Social Link Only</span>
+          <button type="button" onclick="event.stopPropagation(); openAgencyAuditModal('${lead.place_id}')" class="px-2 py-0.5 rounded text-[10px] font-semibold font-label bg-surface-container hover:bg-primary-fixed text-secondary hover:text-on-primary-fixed border border-surface-container-high flex items-center gap-1 transition-all cursor-pointer" title="Build Local SEO Audit & Agency Pitch">
+            <span class="material-symbols-outlined text-[11px]">picture_as_pdf</span>
+            <span>Agency Pitch</span>
+          </button>
+        </div>
+      `;
     } else {
-      websiteBadge = `<span class="px-2 py-0.5 rounded text-[10px] font-label font-semibold bg-surface-container text-secondary">No Website</span>`;
+      websiteBadge = `
+        <div class="flex items-center gap-1.5 flex-wrap">
+          <span class="px-2 py-0.5 rounded text-[10px] font-label font-semibold bg-surface-container text-secondary">No Website</span>
+          <button type="button" onclick="event.stopPropagation(); openAgencyAuditModal('${lead.place_id}')" class="px-2 py-0.5 rounded text-[10px] font-semibold font-label bg-surface-container hover:bg-primary-fixed text-secondary hover:text-on-primary-fixed border border-surface-container-high flex items-center gap-1 transition-all cursor-pointer" title="Build Local Pack & GBP Audit Pitch">
+            <span class="material-symbols-outlined text-[11px]">picture_as_pdf</span>
+            <span>Agency Pitch</span>
+          </button>
+        </div>
+      `;
     }
 
 
@@ -3189,10 +3240,16 @@ function openLeadModal(lead) {
             <span class="text-secondary text-[11px]">${(lead.seo_report && lead.seo_report.opportunity_score !== undefined && lead.seo_report.opportunity_score !== null) ? `Opportunity Score: ${lead.seo_report.opportunity_score}/100 • 11 Signals Audited` : 'Audit 11 on-page signals (Speed, Mobile, Schema, NAP, Meta)'}</span>
           </div>
         </div>
-        <button type="button" onclick="closeLeadModal(); triggerPageSeoAudit('${lead.place_id}')" class="px-3 py-1.5 rounded-lg bg-amber-500 hover:bg-amber-600 font-semibold text-white text-xs flex items-center gap-1 shadow-xs transition-all">
-          <span>${(lead.seo_report && lead.seo_report.opportunity_score !== undefined && lead.seo_report.opportunity_score !== null) ? `View Report (${lead.seo_report.opportunity_score}/100)` : 'Run SEO Audit'}</span>
-          <span class="material-symbols-outlined text-[14px]">arrow_forward</span>
-        </button>
+        <div class="flex items-center gap-2">
+          <button type="button" onclick="closeLeadModal(); triggerPageSeoAudit('${lead.place_id}')" class="px-3 py-1.5 rounded-lg bg-amber-500 hover:bg-amber-600 font-semibold text-white text-xs flex items-center gap-1 shadow-xs transition-all">
+            <span>${(lead.seo_report && lead.seo_report.opportunity_score !== undefined && lead.seo_report.opportunity_score !== null) ? `View Report (${lead.seo_report.opportunity_score}/100)` : 'Run SEO Audit'}</span>
+            <span class="material-symbols-outlined text-[14px]">arrow_forward</span>
+          </button>
+          <button type="button" onclick="closeLeadModal(); openAgencyAuditModal('${lead.place_id}')" class="px-3 py-1.5 rounded-lg bg-primary hover:bg-primary/90 font-semibold text-white text-xs flex items-center gap-1.5 shadow-xs transition-all">
+            <span class="material-symbols-outlined text-[14px]">picture_as_pdf</span>
+            <span>Agency Audit &amp; PDF</span>
+          </button>
+        </div>
       </div>
     ` : `
       <div class="flex items-center justify-between p-3 rounded-xl bg-surface-container/60 border border-surface-container-high text-xs opacity-80">
@@ -3528,5 +3585,807 @@ function renderSeoAuditReportInModal(lead, report) {
     }).join("");
   }
 }
+
+/* =========================================================================
+   AGENCY WHITE-LABEL AUDIT STUDIO & PDF REPORT ENGINE
+   ========================================================================= */
+
+let currentAgencyBranding = {
+  agency_name: "Apex Digital Marketing",
+  logo_url: "",
+  tagline: "Data-Driven Local Growth Agency",
+  primary_color: "#094cb2",
+  accent_color: "#6d5e00",
+  contact_email: "hello@agency.com",
+  website: "https://agency.com",
+  phone: ""
+};
+
+let activeAgencyAuditLead = null;
+let activeAgencyAuditReport = null;
+
+async function loadAgencyBrandingProfile() {
+  try {
+    const saved = localStorage.getItem("leadpulse_agency_branding");
+    if (saved) {
+      const parsed = JSON.parse(saved);
+      currentAgencyBranding = { ...currentAgencyBranding, ...parsed };
+    }
+
+    const res = await fetch("/api/agency/branding").catch(() => null);
+    if (res && res.ok) {
+      const serverBranding = await res.json();
+      if (serverBranding && serverBranding.agency_name) {
+        currentAgencyBranding = { ...currentAgencyBranding, ...serverBranding };
+        localStorage.setItem("leadpulse_agency_branding", JSON.stringify(currentAgencyBranding));
+      }
+    }
+  } catch (err) {
+    console.warn("Could not load agency branding from server, using local defaults:", err);
+  }
+
+  syncAgencyBrandingInputs();
+  updateAgencyBrandingLivePreview();
+}
+
+function syncAgencyBrandingInputs() {
+  const b = currentAgencyBranding;
+  // Audit Studio Panel Inputs
+  const brandName = document.getElementById("agencyBrandName");
+  if (brandName) brandName.value = b.agency_name || "";
+  const brandTagline = document.getElementById("agencyBrandTagline");
+  if (brandTagline) brandTagline.value = b.tagline || "";
+  const brandWebsite = document.getElementById("agencyBrandWebsite");
+  if (brandWebsite) brandWebsite.value = b.website || "";
+  const brandEmail = document.getElementById("agencyBrandEmail");
+  if (brandEmail) brandEmail.value = b.contact_email || "";
+  const brandLogoUrl = document.getElementById("agencyBrandLogoUrl");
+  if (brandLogoUrl) brandLogoUrl.value = b.logo_url || "";
+  const primaryColor = document.getElementById("agencyBrandPrimaryColor");
+  if (primaryColor) primaryColor.value = b.primary_color || "#094cb2";
+  const primaryHex = document.getElementById("agencyBrandPrimaryHex");
+  if (primaryHex) primaryHex.value = b.primary_color || "#094cb2";
+  const accentColor = document.getElementById("agencyBrandAccentColor");
+  if (accentColor) accentColor.value = b.accent_color || "#6d5e00";
+  const accentHex = document.getElementById("agencyBrandAccentHex");
+  if (accentHex) accentHex.value = b.accent_color || "#6d5e00";
+
+  // Standalone Branding Modal Inputs
+  const modalName = document.getElementById("brandModalName");
+  if (modalName) modalName.value = b.agency_name || "";
+  const modalTagline = document.getElementById("brandModalTagline");
+  if (modalTagline) modalTagline.value = b.tagline || "";
+  const modalWebsite = document.getElementById("brandModalWebsite");
+  if (modalWebsite) modalWebsite.value = b.website || "";
+  const modalEmail = document.getElementById("brandModalEmail");
+  if (modalEmail) modalEmail.value = b.contact_email || "";
+  const modalLogoUrl = document.getElementById("brandModalLogoUrl");
+  if (modalLogoUrl) modalLogoUrl.value = b.logo_url || "";
+  const modalPrimaryColor = document.getElementById("brandModalPrimaryColor");
+  if (modalPrimaryColor) modalPrimaryColor.value = b.primary_color || "#094cb2";
+  const modalPrimaryHex = document.getElementById("brandModalPrimaryHex");
+  if (modalPrimaryHex) modalPrimaryHex.value = b.primary_color || "#094cb2";
+  const modalAccentColor = document.getElementById("brandModalAccentColor");
+  if (modalAccentColor) modalAccentColor.value = b.accent_color || "#6d5e00";
+  const modalAccentHex = document.getElementById("brandModalAccentHex");
+  if (modalAccentHex) modalAccentHex.value = b.accent_color || "#6d5e00";
+
+  const footerText = document.getElementById("agencyFooterBrandingText");
+  if (footerText) footerText.innerText = `White-Label Report Engine • ${b.agency_name || "Apex Digital Marketing"}`;
+}
+
+function updateAgencyBrandingLivePreview() {
+  const b = currentAgencyBranding;
+  const nameEl = document.getElementById("brandPreviewName");
+  if (nameEl) nameEl.innerText = b.agency_name || "Apex Digital Marketing";
+  const taglineEl = document.getElementById("brandPreviewTagline");
+  if (taglineEl) taglineEl.innerText = b.tagline || "Data-Driven Local Growth Agency";
+  const siteEl = document.getElementById("brandPreviewSite");
+  if (siteEl) {
+    try {
+      const url = new URL(b.website || "https://agency.com");
+      siteEl.innerText = url.hostname;
+    } catch {
+      siteEl.innerText = b.website || "agency.com";
+    }
+  }
+  const badgeEl = document.getElementById("brandPreviewBadge");
+  if (badgeEl) {
+    badgeEl.style.backgroundColor = b.primary_color || "#094cb2";
+    badgeEl.innerText = (b.agency_name || "A").trim().charAt(0).toUpperCase();
+  }
+}
+
+async function saveAgencyBrandingProfile() {
+  const b = {
+    agency_name: document.getElementById("agencyBrandName")?.value?.trim() || "Apex Digital Marketing",
+    tagline: document.getElementById("agencyBrandTagline")?.value?.trim() || "Data-Driven Local Growth Agency",
+    website: document.getElementById("agencyBrandWebsite")?.value?.trim() || "https://agency.com",
+    contact_email: document.getElementById("agencyBrandEmail")?.value?.trim() || "hello@agency.com",
+    logo_url: document.getElementById("agencyBrandLogoUrl")?.value?.trim() || null,
+    primary_color: document.getElementById("agencyBrandPrimaryColor")?.value || "#094cb2",
+    accent_color: document.getElementById("agencyBrandAccentColor")?.value || "#6d5e00",
+    phone: currentAgencyBranding.phone || null
+  };
+
+  currentAgencyBranding = b;
+  localStorage.setItem("leadpulse_agency_branding", JSON.stringify(b));
+  syncAgencyBrandingInputs();
+  updateAgencyBrandingLivePreview();
+
+  try {
+    await fetch("/api/agency/branding", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(b)
+    });
+  } catch (err) {
+    console.warn("Could not sync branding to server:", err);
+  }
+
+  showToast("Agency branding profile saved successfully!", "success");
+}
+
+async function saveStandaloneAgencyBranding() {
+  const b = {
+    agency_name: document.getElementById("brandModalName")?.value?.trim() || "Apex Digital Marketing",
+    tagline: document.getElementById("brandModalTagline")?.value?.trim() || "Data-Driven Local Growth Agency",
+    website: document.getElementById("brandModalWebsite")?.value?.trim() || "https://agency.com",
+    contact_email: document.getElementById("brandModalEmail")?.value?.trim() || "hello@agency.com",
+    logo_url: document.getElementById("brandModalLogoUrl")?.value?.trim() || null,
+    primary_color: document.getElementById("brandModalPrimaryColor")?.value || "#094cb2",
+    accent_color: document.getElementById("brandModalAccentColor")?.value || "#6d5e00",
+    phone: currentAgencyBranding.phone || null
+  };
+
+  currentAgencyBranding = b;
+  localStorage.setItem("leadpulse_agency_branding", JSON.stringify(b));
+  syncAgencyBrandingInputs();
+  updateAgencyBrandingLivePreview();
+
+  try {
+    await fetch("/api/agency/branding", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(b)
+    });
+  } catch (err) {
+    console.warn("Could not sync branding to server:", err);
+  }
+
+  showToast("Agency branding updated for all audits and PDF exports!", "success");
+  closeAgencyBrandingModal();
+}
+
+function openAgencyBrandingModal() {
+  syncAgencyBrandingInputs();
+  updateAgencyBrandingLivePreview();
+  const modal = document.getElementById("agencyBrandingModal");
+  if (modal) modal.classList.remove("hidden");
+}
+
+function closeAgencyBrandingModal() {
+  const modal = document.getElementById("agencyBrandingModal");
+  if (modal) modal.classList.add("hidden");
+}
+
+function toggleAgencyBrandingPanel() {
+  const panel = document.getElementById("agencyBrandingPanel");
+  const chevron = document.getElementById("brandingChevron");
+  if (!panel) return;
+  const isHidden = panel.classList.contains("hidden");
+  if (isHidden) {
+    panel.classList.remove("hidden");
+    if (chevron) chevron.innerText = "expand_less";
+  } else {
+    panel.classList.add("hidden");
+    if (chevron) chevron.innerText = "expand_more";
+  }
+}
+
+function setAllAuditSections(enabled) {
+  const sectionIds = [
+    "sec_website_technical_seo",
+    "sec_onpage_local_seo",
+    "sec_competitor_research",
+    "sec_pagespeed_mobile",
+    "sec_ads_tracking",
+    "sec_inner_pages"
+  ];
+  sectionIds.forEach(id => {
+    const el = document.getElementById(id);
+    if (el) el.checked = Boolean(enabled);
+  });
+}
+
+function openAgencyAuditModal(placeId) {
+  const lead = allLeads.find(l => l.place_id === placeId);
+  if (!lead) {
+    showToast("Lead not found in current session", "warning");
+    return;
+  }
+
+  activeAgencyAuditLead = lead;
+  activeAgencyAuditReport = lead.ai_audit_report || null;
+
+  const modal = document.getElementById("agencyAuditModal");
+  const bizNameEl = document.getElementById("agencyModalBizName");
+  const categoryLocEl = document.getElementById("agencyModalBizCategoryLoc");
+  const urlEl = document.getElementById("agencyModalUrl");
+  const scoreBadgeEl = document.getElementById("agencyModalScoreBadge");
+
+  if (bizNameEl) bizNameEl.innerText = lead.name || "Business Lead";
+  if (categoryLocEl) {
+    const cat = lead.category || "Business";
+    const loc = lead.neighborhood || lead.address || "Location on file";
+    categoryLocEl.innerText = `${cat} • ${loc}`;
+  }
+  if (urlEl) {
+    if (lead.website_url) {
+      urlEl.href = lead.website_url;
+      urlEl.innerHTML = `${cleanDomain(lead.website_url)} <span class="material-symbols-outlined text-[13px]">north_east</span>`;
+      urlEl.classList.remove("hidden");
+    } else {
+      urlEl.href = "#";
+      urlEl.innerText = "No Website Provided (Local Pack Audit)";
+    }
+  }
+
+  if (activeAgencyAuditReport) {
+    renderAgencyAuditReport(activeAgencyAuditReport);
+  } else {
+    if (scoreBadgeEl) {
+      scoreBadgeEl.innerText = "Ready to Build";
+      scoreBadgeEl.className = "px-2.5 py-0.5 rounded-full text-xs font-bold font-label bg-surface-container text-secondary border border-surface-container-high";
+    }
+    const canvas = document.getElementById("agencyReportCanvas");
+    if (canvas) {
+      canvas.innerHTML = `
+        <div class="p-8 rounded-2xl bg-surface-container-low border border-dashed border-surface-container-high flex flex-col items-center justify-center text-center gap-3">
+          <div class="w-14 h-14 rounded-2xl bg-primary-fixed/40 text-primary flex items-center justify-center shadow-xs">
+            <span class="material-symbols-outlined text-[32px]">auto_awesome</span>
+          </div>
+          <div>
+            <h4 class="font-headline font-bold text-sm text-on-surface">Ready to Generate Client Audit</h4>
+            <p class="text-xs text-secondary mt-1 max-w-md">
+              Select desired audit modules above and click <strong>"Generate Client-Ready AI Audit"</strong> to produce an evidence-backed report, prioritized roadmap, and white-label PDF.
+            </p>
+          </div>
+        </div>
+      `;
+    }
+  }
+
+  if (modal) modal.classList.remove("hidden");
+}
+
+function closeAgencyAuditModal() {
+  const modal = document.getElementById("agencyAuditModal");
+  if (modal) modal.classList.add("hidden");
+}
+
+async function generateAgencyReport() {
+  if (!activeAgencyAuditLead) {
+    showToast("No active lead selected", "warning");
+    return;
+  }
+
+  const lead = activeAgencyAuditLead;
+  const targetUrl = lead.website_url;
+  if (!targetUrl) {
+    showToast("This business does not have a website URL on file. Enter or update website first.", "warning");
+    return;
+  }
+
+  const secTechnical = document.getElementById("sec_website_technical_seo")?.checked ?? true;
+  const secOnpage = document.getElementById("sec_onpage_local_seo")?.checked ?? true;
+  const secCompetitor = document.getElementById("sec_competitor_research")?.checked ?? true;
+  const secPagespeed = document.getElementById("sec_pagespeed_mobile")?.checked ?? true;
+  const secTracking = document.getElementById("sec_ads_tracking")?.checked ?? true;
+  const secInner = document.getElementById("sec_inner_pages")?.checked ?? true;
+
+  const sectionsConfig = {
+    website_technical_seo: secTechnical,
+    onpage_local_seo: secOnpage,
+    competitor_research: secCompetitor,
+    pagespeed_mobile: secPagespeed,
+    ads_tracking: secTracking,
+    inner_pages: secInner
+  };
+
+  const btn = document.getElementById("btnGenerateAgencyReport");
+  const btnText = document.getElementById("btnGenerateReportText");
+  const canvas = document.getElementById("agencyReportCanvas");
+  const scoreBadgeEl = document.getElementById("agencyModalScoreBadge");
+
+  if (btn) btn.disabled = true;
+  if (btnText) btnText.innerText = "Analyzing & Generating...";
+  if (scoreBadgeEl) {
+    scoreBadgeEl.innerText = "Auditing Signals...";
+    scoreBadgeEl.className = "px-2.5 py-0.5 rounded-full text-xs font-bold font-label bg-amber-100 text-amber-900 border border-amber-300 animate-pulse";
+  }
+
+  if (canvas) {
+    canvas.innerHTML = `
+      <div class="p-8 rounded-2xl bg-surface-container-low border border-surface-container-high flex flex-col items-center justify-center text-center gap-3">
+        <span class="material-symbols-outlined text-[36px] animate-spin text-primary">sync</span>
+        <div>
+          <h4 class="font-headline font-bold text-sm text-on-surface">Running Multi-Module Local SEO Audit</h4>
+          <p class="text-xs text-secondary mt-1 max-w-md">
+            Analyzing website with Chrome TLS 124, probing technical SEO, calculating Core Web Vitals, and synthesizing client action plan...
+          </p>
+        </div>
+      </div>
+    `;
+  }
+
+  try {
+    const payload = {
+      audit_input: {
+        url: targetUrl,
+        business_name: lead.name,
+        category: lead.category || "",
+        city: lead.neighborhood || "",
+        phone: lead.phone || "",
+        address: lead.address || "",
+        rating: lead.rating || null,
+        reviews_count: lead.reviews_count || null,
+        job_id: currentJobId || null,
+        place_id: lead.place_id || null
+      },
+      sections: sectionsConfig,
+      branding: currentAgencyBranding
+    };
+
+    const res = await fetch("/api/seo-audit/generate-report", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload)
+    });
+
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      throw new Error(err.detail || `Server responded with status ${res.status}`);
+    }
+
+    const report = await res.json();
+    activeAgencyAuditReport = report;
+    lead.ai_audit_report = report;
+
+    // Attach discovered SEO report, PageSpeed, and competitors to lead for feed badge updates
+    if (report.raw_seo_report) {
+      lead.seo_report = report.raw_seo_report;
+    }
+    if (report.pagespeed_data && report.pagespeed_data.mobile_score !== undefined && report.pagespeed_data.mobile_score !== null) {
+      lead.pagespeed = report.pagespeed_data;
+      lead.pagespeed_score = report.pagespeed_data.mobile_score;
+    }
+    if (report.competitors && report.competitors.length > 0) {
+      lead.competitors = report.competitors;
+    }
+
+    renderLeadsFeed(); // Update feed cards with latest badges & pills
+    renderAgencyAuditReport(report);
+    showToast("Client-ready AI audit generated successfully!", "success");
+
+  } catch (err) {
+    console.error("Agency Audit Generation Error:", err);
+    if (scoreBadgeEl) {
+      scoreBadgeEl.innerText = "Audit Incomplete";
+      scoreBadgeEl.className = "px-2.5 py-0.5 rounded-full text-xs font-bold font-label bg-rose-100 text-rose-800 border border-rose-300";
+    }
+    if (canvas) {
+      canvas.innerHTML = `
+        <div class="p-5 rounded-xl bg-rose-50 border border-rose-200 text-rose-900 text-xs flex flex-col gap-2">
+          <div class="flex items-center gap-2 font-bold text-sm">
+            <span class="material-symbols-outlined text-[18px]">error</span>
+            Audit Generation Failed
+          </div>
+          <p>${escapeHtml(err.message)}</p>
+          <p class="text-rose-700 text-[11px]">Verify website connectivity or try unchecking external modules (PageSpeed / Competitor Research) if API limits are reached.</p>
+        </div>
+      `;
+    }
+  } finally {
+    if (btn) btn.disabled = false;
+    if (btnText) btnText.innerText = "Generate Client-Ready AI Audit";
+  }
+}
+
+async function exportAgencyPdf() {
+  if (!activeAgencyAuditLead) {
+    showToast("No active lead selected", "warning");
+    return;
+  }
+
+  const lead = activeAgencyAuditLead;
+  const targetUrl = lead.website_url;
+  if (!targetUrl) {
+    showToast("No website available for PDF export", "warning");
+    return;
+  }
+
+  const btn = document.getElementById("btnExportAgencyPdf");
+  const btnText = document.getElementById("btnExportPdfText");
+  if (btn) btn.disabled = true;
+  if (btnText) btnText.innerText = "Generating Branded PDF...";
+
+  try {
+    const secTechnical = document.getElementById("sec_website_technical_seo")?.checked ?? true;
+    const secOnpage = document.getElementById("sec_onpage_local_seo")?.checked ?? true;
+    const secCompetitor = document.getElementById("sec_competitor_research")?.checked ?? true;
+    const secPagespeed = document.getElementById("sec_pagespeed_mobile")?.checked ?? true;
+    const secTracking = document.getElementById("sec_ads_tracking")?.checked ?? true;
+    const secInner = document.getElementById("sec_inner_pages")?.checked ?? true;
+
+    const payload = {
+      audit_input: {
+        url: targetUrl,
+        business_name: lead.name,
+        category: lead.category || "",
+        city: lead.neighborhood || "",
+        phone: lead.phone || "",
+        address: lead.address || "",
+        rating: lead.rating || null,
+        reviews_count: lead.reviews_count || null,
+        job_id: currentJobId || null,
+        place_id: lead.place_id || null
+      },
+      sections: {
+        website_technical_seo: secTechnical,
+        onpage_local_seo: secOnpage,
+        competitor_research: secCompetitor,
+        pagespeed_mobile: secPagespeed,
+        ads_tracking: secTracking,
+        inner_pages: secInner
+      },
+      branding: currentAgencyBranding,
+      report_data: activeAgencyAuditReport || null
+    };
+
+    const res = await fetch("/api/seo-audit/export-pdf", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload)
+    });
+
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      throw new Error(err.detail || `Server responded with status ${res.status}`);
+    }
+
+    const blob = await res.blob();
+    const downloadUrl = window.URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = downloadUrl;
+    const cleanBizName = (lead.name || "Business").replace(/[^a-zA-Z0-9_-]/g, "_");
+    a.download = `${cleanBizName}_Local_SEO_Audit_Report.pdf`;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    window.URL.revokeObjectURL(downloadUrl);
+
+    showToast("White-label PDF downloaded successfully!", "success");
+
+  } catch (err) {
+    console.error("PDF Export Error:", err);
+    showToast(`PDF generation error: ${err.message}`, "warning");
+  } finally {
+    if (btn) btn.disabled = false;
+    if (btnText) btnText.innerText = "Download White-Label PDF";
+  }
+}
+
+function copyAgencyExecutiveSummary() {
+  const summaryEl = document.getElementById("agencyModalExecutiveSummaryText");
+  const btnLabelEl = document.getElementById("copyExecutiveSummaryLabel");
+  if (!summaryEl) return;
+  const rawText = summaryEl.innerText.trim();
+  if (!rawText) {
+    showToast("No executive summary to copy yet. Generate report first.", "warning");
+    return;
+  }
+  navigator.clipboard.writeText(rawText).then(() => {
+    if (btnLabelEl) btnLabelEl.innerText = "Copied!";
+    showToast("Executive summary pitch copied to clipboard!", "success");
+    setTimeout(() => {
+      if (btnLabelEl) btnLabelEl.innerText = "Copy Executive Summary";
+    }, 2500);
+  }).catch(() => {
+    showToast("Failed to copy executive summary", "warning");
+  });
+}
+
+function renderAgencyAuditReport(report) {
+  const scoreBadgeEl = document.getElementById("agencyModalScoreBadge");
+  const canvas = document.getElementById("agencyReportCanvas");
+  if (!canvas) return;
+
+  const score = report.seo_health_score;
+  let scoreColor = "bg-amber-100 text-amber-900 border-amber-300";
+  let scoreClass = "text-amber-600";
+  if (typeof score === "number") {
+    if (score >= 80) {
+      scoreColor = "bg-emerald-100 text-emerald-900 border-emerald-300";
+      scoreClass = "text-emerald-600";
+    } else if (score < 50) {
+      scoreColor = "bg-rose-100 text-rose-900 border-rose-300";
+      scoreClass = "text-rose-600";
+    }
+  }
+
+  if (scoreBadgeEl) {
+    scoreBadgeEl.innerText = (typeof score === "number") ? `SEO Health: ${score}/100` : "Audit Complete";
+    scoreBadgeEl.className = `px-2.5 py-0.5 rounded-full text-xs font-bold font-label border ${scoreColor}`;
+  }
+
+  const criticals = report.critical_issues || [];
+  const warnings = report.warnings || [];
+  const passed = report.passed_checks || [];
+  const scopeList = report.audit_scope || [];
+  const actionPlan = report.action_plan || [];
+  const competitors = report.competitors || [];
+  const limitations = report.data_limitations || [];
+
+  // Group action plan by timeframe
+  const quickWins = actionPlan.filter(a => a.timeframe && a.timeframe.includes("Quick Win"));
+  const mediumTerm = actionPlan.filter(a => a.timeframe && a.timeframe.includes("Medium-Term"));
+  const longTerm = actionPlan.filter(a => a.timeframe && a.timeframe.includes("Long-Term"));
+
+  canvas.innerHTML = `
+    <!-- Top Scorecard & Scope Bar -->
+    <div class="p-4 rounded-xl bg-surface-container-low border border-surface-container-high flex flex-col md:flex-row md:items-center justify-between gap-4">
+      <div class="flex items-center gap-4">
+        <div class="w-16 h-16 rounded-2xl bg-surface-container-lowest border border-surface-container-high/60 flex flex-col items-center justify-center shadow-xs shrink-0">
+          <span class="text-xs font-label uppercase text-secondary font-bold text-[10px]">Score</span>
+          <span class="font-headline font-bold text-2xl ${scoreClass}">${(typeof score === 'number') ? score : '--'}</span>
+        </div>
+        <div class="flex flex-col gap-1">
+          <span class="font-headline font-bold text-sm text-on-surface">${escapeHtml(report.business_name || 'Business')}</span>
+          <div class="flex items-center gap-1.5 flex-wrap">
+            <span class="px-2 py-0.5 rounded text-[10px] font-bold font-label bg-rose-100 text-rose-800 border border-rose-200">
+              ${criticals.length} Critical
+            </span>
+            <span class="px-2 py-0.5 rounded text-[10px] font-bold font-label bg-amber-100 text-amber-800 border border-amber-200">
+              ${warnings.length} Warnings
+            </span>
+            <span class="px-2 py-0.5 rounded text-[10px] font-bold font-label bg-emerald-100 text-emerald-800 border border-emerald-200">
+              ${passed.length} Passed
+            </span>
+          </div>
+        </div>
+      </div>
+
+      <div class="flex flex-col md:items-end gap-1 text-xs">
+        <span class="text-[11px] font-label uppercase font-bold text-secondary tracking-wider">Audit Scope</span>
+        <div class="flex items-center gap-1 flex-wrap md:justify-end">
+          ${scopeList.map(s => `<span class="px-2 py-0.5 rounded-full bg-surface-container text-on-surface text-[10px] font-semibold border border-surface-container-high">${escapeHtml(s)}</span>`).join("")}
+        </div>
+        <span class="text-[10px] text-secondary mt-0.5">Audited on ${escapeHtml(report.audit_date || new Date().toISOString().slice(0,10))}</span>
+      </div>
+    </div>
+
+    <!-- Agency Executive Summary Box -->
+    <div class="p-4 rounded-xl bg-primary/5 border border-primary/20 flex flex-col gap-2.5">
+      <div class="flex items-center justify-between">
+        <div class="flex items-center gap-2">
+          <span class="material-symbols-outlined text-[20px] text-primary">campaign</span>
+          <h4 class="font-headline font-bold text-sm text-primary">Executive Summary &amp; Client Pitch</h4>
+        </div>
+        <button type="button" onclick="copyAgencyExecutiveSummary()" class="px-2.5 py-1 rounded-lg bg-primary text-on-primary hover:bg-primary/90 text-[11px] font-semibold flex items-center gap-1 shadow-2xs transition-all cursor-pointer">
+          <span class="material-symbols-outlined text-[13px]">content_copy</span>
+          <span>Copy Pitch</span>
+        </button>
+      </div>
+      <p id="agencyModalExecutiveSummaryText" class="text-xs text-on-surface font-body leading-relaxed pl-1 whitespace-pre-line">${escapeHtml(report.executive_summary || 'No executive summary generated.')}</p>
+    </div>
+
+    <!-- Competitor Gap Research Matrix -->
+    ${(competitors.length > 0) ? `
+      <div class="flex flex-col gap-2 p-4 rounded-xl bg-surface-container-low border border-surface-container-high/80">
+        <div class="flex items-center justify-between">
+          <div class="flex items-center gap-2">
+            <span class="material-symbols-outlined text-[18px] text-purple-600">compare_arrows</span>
+            <h4 class="font-headline font-bold text-xs text-on-surface uppercase tracking-wider">Top 3 Local Competitor Comparison &amp; Gaps</h4>
+          </div>
+          <span class="text-[10px] text-secondary font-mono">${competitors.length} Local Competitors Analyzed</span>
+        </div>
+
+        <div class="overflow-x-auto rounded-lg border border-surface-container-high bg-surface-container-lowest mt-1">
+          <table class="w-full text-left text-xs font-body">
+            <thead class="bg-surface-container font-label uppercase text-[10px] text-secondary tracking-wider border-b border-surface-container-high">
+              <tr>
+                <th class="px-3 py-2">Business</th>
+                <th class="px-3 py-2">Rating &amp; Reviews</th>
+                <th class="px-3 py-2">SEO Health</th>
+                <th class="px-3 py-2">PageSpeed</th>
+                <th class="px-3 py-2">Schema / NAP</th>
+                <th class="px-3 py-2">Key Gaps</th>
+              </tr>
+            </thead>
+            <tbody class="divide-y divide-surface-container-high/40">
+              <!-- Target Business Row -->
+              <tr class="bg-primary/5 font-semibold">
+                <td class="px-3 py-2.5 flex items-center gap-1.5 text-primary">
+                  <span class="material-symbols-outlined text-[15px]">my_location</span>
+                  <span>${escapeHtml(report.business_name)} (Target)</span>
+                </td>
+                <td class="px-3 py-2.5 text-secondary">
+                  ${report.raw_seo_report && report.raw_seo_report.rating ? `★ ${report.raw_seo_report.rating} (${report.raw_seo_report.reviews_count || 0})` : '--'}
+                </td>
+                <td class="px-3 py-2.5 ${scoreClass}">
+                  ${(typeof score === 'number') ? `${score}/100` : '--'}
+                </td>
+                <td class="px-3 py-2.5">
+                  ${(report.pagespeed_data && report.pagespeed_data.mobile_score !== undefined && report.pagespeed_data.mobile_score !== null) ? `${report.pagespeed_data.mobile_score}/100` : '--'}
+                </td>
+                <td class="px-3 py-2.5 text-[11px] text-secondary">
+                  Audited
+                </td>
+                <td class="px-3 py-2.5 text-secondary text-[11px] italic">
+                  Baseline Target
+                </td>
+              </tr>
+
+              <!-- Competitors Rows -->
+              ${competitors.map(comp => `
+                <tr class="hover:bg-surface-container transition-colors">
+                  <td class="px-3 py-2 font-medium text-on-surface">${escapeHtml(comp.business_name)}</td>
+                  <td class="px-3 py-2 text-secondary">${comp.rating ? `★ ${comp.rating} (${comp.reviews_count || 0})` : '--'}</td>
+                  <td class="px-3 py-2 font-semibold ${comp.seo_score >= 80 ? 'text-emerald-600' : 'text-amber-600'}">${(comp.seo_score !== null && comp.seo_score !== undefined) ? `${comp.seo_score}/100` : '--'}</td>
+                  <td class="px-3 py-2">${(comp.pagespeed_score !== null && comp.pagespeed_score !== undefined) ? `${comp.pagespeed_score}/100` : '--'}</td>
+                  <td class="px-3 py-2 text-[11px] text-secondary">
+                    ${comp.has_schema ? '<span class="text-emerald-700">Schema ✓</span>' : '<span class="text-rose-700">No Schema ✕</span>'}
+                  </td>
+                  <td class="px-3 py-2 text-[11px] text-rose-800 font-medium">
+                    ${(comp.trailing_gaps && comp.trailing_gaps.length > 0) ? escapeHtml(comp.trailing_gaps.slice(0, 2).join(", ")) : 'Even parity'}
+                  </td>
+                </tr>
+              `).join("")}
+            </tbody>
+          </table>
+        </div>
+      </div>
+    ` : ""}
+
+    <!-- Categorized Verified Findings -->
+    <div class="flex flex-col gap-3">
+      <h4 class="font-headline font-bold text-xs text-on-surface uppercase tracking-wider">Categorized SEO Findings &amp; Technical Signals</h4>
+
+      <!-- Critical Issues -->
+      ${criticals.length > 0 ? `
+        <div class="p-3.5 rounded-xl bg-rose-50/80 border border-rose-200 flex flex-col gap-2">
+          <div class="flex items-center gap-1.5 font-bold text-xs text-rose-900">
+            <span class="material-symbols-outlined text-[16px] text-rose-600">cancel</span>
+            <span>Critical Issues (${criticals.length}) — Severe Ranking &amp; Indexation Blockers</span>
+          </div>
+          <ul class="list-disc pl-5 text-xs text-rose-900 flex flex-col gap-1 leading-relaxed">
+            ${criticals.map(c => `<li>${escapeHtml(c)}</li>`).join("")}
+          </ul>
+        </div>
+      ` : ""}
+
+      <!-- Warnings -->
+      ${warnings.length > 0 ? `
+        <div class="p-3.5 rounded-xl bg-amber-50/80 border border-amber-200 flex flex-col gap-2">
+          <div class="flex items-center gap-1.5 font-bold text-xs text-amber-900">
+            <span class="material-symbols-outlined text-[16px] text-amber-600">warning</span>
+            <span>Optimization Warnings &amp; Opportunities (${warnings.length})</span>
+          </div>
+          <ul class="list-disc pl-5 text-xs text-amber-900 flex flex-col gap-1 leading-relaxed">
+            ${warnings.map(w => `<li>${escapeHtml(w)}</li>`).join("")}
+          </ul>
+        </div>
+      ` : ""}
+
+      <!-- Passed Checks -->
+      ${passed.length > 0 ? `
+        <div class="p-3.5 rounded-xl bg-emerald-50/70 border border-emerald-200 flex flex-col gap-2">
+          <div class="flex items-center gap-1.5 font-bold text-xs text-emerald-900">
+            <span class="material-symbols-outlined text-[16px] text-emerald-600">check_circle</span>
+            <span>Passed &amp; Verified Checks (${passed.length})</span>
+          </div>
+          <div class="flex items-center gap-1.5 flex-wrap">
+            ${passed.map(p => `
+              <span class="px-2 py-0.5 rounded text-[11px] font-semibold bg-emerald-100/90 text-emerald-800 border border-emerald-300 flex items-center gap-1">
+                <span class="material-symbols-outlined text-[12px]">check</span>
+                ${escapeHtml(p)}
+              </span>
+            `).join("")}
+          </div>
+        </div>
+      ` : ""}
+    </div>
+
+    <!-- Prioritized Action Plan Roadmap -->
+    ${actionPlan.length > 0 ? `
+      <div class="flex flex-col gap-3 p-4 rounded-xl bg-surface-container-low border border-surface-container-high/80">
+        <div class="flex items-center justify-between">
+          <div class="flex items-center gap-2">
+            <span class="material-symbols-outlined text-[18px] text-primary">route</span>
+            <h4 class="font-headline font-bold text-xs text-on-surface uppercase tracking-wider">Client Action Plan Roadmap</h4>
+          </div>
+          <span class="text-[10px] text-secondary font-mono">${actionPlan.length} Prioritized Deliverables</span>
+        </div>
+
+        <div class="grid grid-cols-1 md:grid-cols-3 gap-3">
+          <!-- Quick Wins (1-7 Days) -->
+          <div class="p-3 rounded-xl bg-surface-container-lowest border border-surface-container-high/60 flex flex-col gap-2">
+            <span class="font-bold text-xs text-primary flex items-center gap-1">
+              <span class="material-symbols-outlined text-[15px]">bolt</span>
+              Quick Wins (1-7 Days)
+            </span>
+            <div class="flex flex-col gap-2">
+              ${quickWins.length > 0 ? quickWins.map(item => `
+                <div class="p-2 rounded-lg bg-surface-container-low border border-surface-container-high/40 text-xs flex flex-col gap-1">
+                  <span class="font-semibold text-on-surface">${escapeHtml(item.title)}</span>
+                  ${item.description ? `<p class="text-[11px] text-secondary leading-relaxed">${escapeHtml(item.description)}</p>` : ""}
+                  <div class="flex items-center justify-between pt-1 text-[10px] text-secondary">
+                    <span>${escapeHtml(item.category || 'SEO')}</span>
+                    <span class="font-bold uppercase text-primary">${escapeHtml(item.priority || 'High')}</span>
+                  </div>
+                </div>
+              `).join("") : '<p class="text-[11px] text-secondary italic">No immediate quick wins required.</p>'}
+            </div>
+          </div>
+
+          <!-- Medium-Term (2-4 Weeks) -->
+          <div class="p-3 rounded-xl bg-surface-container-lowest border border-surface-container-high/60 flex flex-col gap-2">
+            <span class="font-bold text-xs text-amber-700 flex items-center gap-1">
+              <span class="material-symbols-outlined text-[15px]">build</span>
+              Medium-Term (2-4 Weeks)
+            </span>
+            <div class="flex flex-col gap-2">
+              ${mediumTerm.length > 0 ? mediumTerm.map(item => `
+                <div class="p-2 rounded-lg bg-surface-container-low border border-surface-container-high/40 text-xs flex flex-col gap-1">
+                  <span class="font-semibold text-on-surface">${escapeHtml(item.title)}</span>
+                  ${item.description ? `<p class="text-[11px] text-secondary leading-relaxed">${escapeHtml(item.description)}</p>` : ""}
+                  <div class="flex items-center justify-between pt-1 text-[10px] text-secondary">
+                    <span>${escapeHtml(item.category || 'Technical')}</span>
+                    <span class="font-bold uppercase text-amber-700">${escapeHtml(item.priority || 'Medium')}</span>
+                  </div>
+                </div>
+              `).join("") : '<p class="text-[11px] text-secondary italic">No medium-term items.</p>'}
+            </div>
+          </div>
+
+          <!-- Long-Term (1-3 Months) -->
+          <div class="p-3 rounded-xl bg-surface-container-lowest border border-surface-container-high/60 flex flex-col gap-2">
+            <span class="font-bold text-xs text-indigo-700 flex items-center gap-1">
+              <span class="material-symbols-outlined text-[15px]">rocket_launch</span>
+              Long-Term (1-3 Months)
+            </span>
+            <div class="flex flex-col gap-2">
+              ${longTerm.length > 0 ? longTerm.map(item => `
+                <div class="p-2 rounded-lg bg-surface-container-low border border-surface-container-high/40 text-xs flex flex-col gap-1">
+                  <span class="font-semibold text-on-surface">${escapeHtml(item.title)}</span>
+                  ${item.description ? `<p class="text-[11px] text-secondary leading-relaxed">${escapeHtml(item.description)}</p>` : ""}
+                  <div class="flex items-center justify-between pt-1 text-[10px] text-secondary">
+                    <span>${escapeHtml(item.category || 'Authority')}</span>
+                    <span class="font-bold uppercase text-indigo-700">${escapeHtml(item.priority || 'Medium')}</span>
+                  </div>
+                </div>
+              `).join("") : '<p class="text-[11px] text-secondary italic">No long-term items.</p>'}
+            </div>
+          </div>
+        </div>
+      </div>
+    ` : ""}
+
+    <!-- Transparent Data Limitations Notice -->
+    ${limitations.length > 0 ? `
+      <div class="p-3.5 rounded-xl bg-surface-container border border-surface-container-high text-xs text-secondary flex flex-col gap-1.5">
+        <span class="font-semibold text-on-surface flex items-center gap-1 text-[11px] uppercase tracking-wider">
+          <span class="material-symbols-outlined text-[15px] text-secondary">info</span>
+          Data Limitations &amp; Unchecked Metrics Notice
+        </span>
+        <ul class="list-disc pl-5 text-[11px] flex flex-col gap-0.5 leading-relaxed">
+          ${limitations.map(l => `<li>${escapeHtml(l)}</li>`).join("")}
+        </ul>
+      </div>
+    ` : ""}
+  `;
+}
+
 
 
