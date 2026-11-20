@@ -47,6 +47,7 @@ from backend.temp_store import (
     get_job_sync,
     add_job_log_sync,
     save_temp_leads_batch_sync,
+    delete_temp_lead_sync,
     increment_anonymous_quota_sync,
     get_anonymous_quota_sync,
 )
@@ -223,6 +224,24 @@ def export_leads_to_csv(leads: List[LeadItem], filepath: str) -> None:
             writer.writerow(row)
 
 
+def normalize_phone_key(phone: Optional[str]) -> Optional[str]:
+    """Extracts normalized digit key for phone deduplication."""
+    if not phone:
+        return None
+    digits = re.sub(r'\D', '', str(phone))
+    if len(digits) < 7:
+        return None
+    return digits[-10:] if len(digits) >= 10 else digits
+
+
+def normalize_email_key(email: Optional[str]) -> Optional[str]:
+    """Extracts normalized lower-case email key for deduplication."""
+    if not email:
+        return None
+    e = str(email).strip().lower()
+    return e if "@" in e else None
+
+
 def run_pipeline(
     plan: ActionPlan,
     job_id: Optional[str] = None,
@@ -288,7 +307,7 @@ def run_pipeline(
                         is_authenticated=False,
                         prompt=plan.user_prompt or "",
                     )
-                update_job_sync(job_id, status="limit_reached", current_area="1,000 Lead Quota Reached. Login required.")
+                update_job_sync(job_id, status="limit_reached", current_area=f"{ANONYMOUS_LEAD_LIMIT:,} Lead Quota Reached. Login required.")
             return {
                 "job_id": job_id,
                 "status": "limit_reached",
@@ -316,6 +335,8 @@ def run_pipeline(
     filtered_leads: List[LeadItem] = []
     seen_place_ids: set = set()
     seen_root_domains: set = set()
+    phone_to_lead_idx: Dict[str, int] = {}
+    email_to_lead_idx: Dict[str, int] = {}
     job_status = "running"
     start_time = time.time()
 
@@ -374,8 +395,84 @@ def run_pipeline(
                 print(f"    -> [Filter Skip: No Email] '{cleaned_lead.name}' has no verified public email. Continuing search...", flush=True)
                 return False
 
-        # Add to qualified filtered leads list
+        # Multi-Key Deduplication: normalized phone and email checks
+        p_key = normalize_phone_key(cleaned_lead.phone)
+        e_keys = [normalize_email_key(em) for em in cleaned_lead.emails if normalize_email_key(em)]
+
+        matched_idx = None
+        dup_field = ""
+
+        if p_key and p_key in phone_to_lead_idx:
+            matched_idx = phone_to_lead_idx[p_key]
+            dup_field = f"phone '{cleaned_lead.phone}'"
+        elif e_keys:
+            for ek in e_keys:
+                if ek in email_to_lead_idx:
+                    matched_idx = email_to_lead_idx[ek]
+                    dup_field = f"email '{ek}'"
+                    break
+
+        if matched_idx is not None and matched_idx < len(filtered_leads):
+            existing_lead = filtered_leads[matched_idx]
+            existing_reviews = existing_lead.reviews_count or 0
+            new_reviews = cleaned_lead.reviews_count or 0
+
+            if new_reviews > existing_reviews:
+                # Upgraded listing with higher review count replaces earlier lower-review duplicate
+                print(
+                    f"    -> [Deduplication Upgrade] Replacing '{existing_lead.name}' ({existing_reviews} reviews) with "
+                    f"'{cleaned_lead.name}' ({new_reviews} reviews) sharing {dup_field}.",
+                    flush=True
+                )
+                if job_id and existing_lead.place_id != cleaned_lead.place_id:
+                    try:
+                        delete_temp_lead_sync(job_id, existing_lead.place_id)
+                    except Exception:
+                        pass
+
+                # Clear old mappings
+                old_p = normalize_phone_key(existing_lead.phone)
+                if old_p and old_p in phone_to_lead_idx:
+                    del phone_to_lead_idx[old_p]
+                for old_e in existing_lead.emails:
+                    old_ek = normalize_email_key(old_e)
+                    if old_ek and old_ek in email_to_lead_idx:
+                        del email_to_lead_idx[old_ek]
+
+                # Update in filtered_leads
+                filtered_leads[matched_idx] = cleaned_lead
+
+                # Register new mappings
+                if p_key:
+                    phone_to_lead_idx[p_key] = matched_idx
+                for ek in e_keys:
+                    email_to_lead_idx[ek] = matched_idx
+
+                if job_id:
+                    pending_db_leads.append(cleaned_lead)
+                    flush_pending_db_leads()
+                    if on_batch:
+                        try:
+                            on_batch(job_id, [cleaned_lead])
+                        except Exception as cb_err:
+                            print(f"[Warning] on_batch callback error: {cb_err}")
+                return True
+            else:
+                # Existing listing has equal or more reviews: skip duplicate to protect outreach
+                print(
+                    f"    -> [Filter Skip: Duplicate Contact] '{cleaned_lead.name}' ({new_reviews} reviews) shares {dup_field} "
+                    f"with existing lead '{existing_lead.name}' ({existing_reviews} reviews). Skipping.",
+                    flush=True
+                )
+                return False
+
+        # If not a duplicate, add to qualified list
+        target_idx = len(filtered_leads)
         filtered_leads.append(cleaned_lead)
+        if p_key:
+            phone_to_lead_idx[p_key] = target_idx
+        for ek in e_keys:
+            email_to_lead_idx[ek] = target_idx
 
         # Instant real-time streaming: flush each lead immediately to SQLite so the UI displays it without delay
         if job_id:
@@ -421,6 +518,13 @@ def run_pipeline(
         for lead in new_raw_leads:
             if lead.place_id not in seen_place_ids:
                 seen_place_ids.add(lead.place_id)
+
+                # Pre-filter by phone if listing already exists with equal or more reviews
+                p_key = normalize_phone_key(lead.phone)
+                if p_key and p_key in phone_to_lead_idx:
+                    existing_lead = filtered_leads[phone_to_lead_idx[p_key]]
+                    if (lead.reviews_count or 0) <= (existing_lead.reviews_count or 0):
+                        continue
 
                 # Domain Deduplication: If lead has own website, check if domain was already seen
                 if lead.website_status == "Has Own Website" and lead.website_url:

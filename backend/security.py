@@ -9,7 +9,7 @@ from fastapi import Request, Header, HTTPException, status
 from google.oauth2 import id_token
 from google.auth.transport import requests as google_requests
 
-from config import GOOGLE_CLIENT_ID, PRIMARY_ADMIN_EMAIL
+from config import GOOGLE_CLIENT_ID, PRIMARY_ADMIN_EMAIL, ANONYMOUS_LEAD_LIMIT
 
 # Whitelist of verified administrators. Defaults exclusively to PRIMARY_ADMIN_EMAIL.
 ADMIN_EMAILS = {PRIMARY_ADMIN_EMAIL}

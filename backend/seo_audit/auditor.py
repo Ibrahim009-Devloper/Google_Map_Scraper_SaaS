@@ -118,6 +118,8 @@ def audit_single_business(
                 extracted_title=cached_rep.extracted_title,
                 word_count=cached_rep.word_count,
                 has_website=True,
+                score=cached_rep.seo_health_score,
+                is_js_rendered=cached_rep.is_js_rendered,
             )
             # Create a shallow copy with personalized hook
             new_row_data = dict(cached_rep.xlsx_row_data)
@@ -168,6 +170,8 @@ def audit_single_business(
         extracted_h1 = check_res.get("extracted_h1", "")
         word_count = check_res.get("word_count", 0)
         is_https = check_res.get("is_https", False)
+        is_js_rendered = bool(check_res.get("is_js_rendered", False))
+        audited_page_type = check_res.get("audited_page_type", "homepage")
 
         # 2. Compute Health Score & Pitch Priority
         health_score, pitch_priority = calculate_seo_health_and_pitch(
@@ -176,6 +180,7 @@ def audit_single_business(
             is_https=is_https,
             business_rating=business.rating,
             reviews_count=business.reviews_count,
+            is_js_rendered=is_js_rendered,
         )
 
         # 3. Generate Personalized Icebreaker Hook
@@ -186,10 +191,16 @@ def audit_single_business(
             extracted_title=extracted_title,
             word_count=word_count,
             has_website=True,
+            score=health_score,
+            is_js_rendered=is_js_rendered,
         )
 
         # 4. Fill in the Scoring & Outreach Columns
-        if health_score is not None:
+        if is_js_rendered:
+            xlsx_row["SEO Health Score"] = "N/A (JS-Rendered)"
+            xlsx_row["SEO Opportunity Score"] = "N/A (JS-Rendered)"
+            opp_score = None
+        elif health_score is not None:
             xlsx_row["SEO Health Score"] = f"{health_score}/100"
             opp_score = 100 - health_score
             xlsx_row["SEO Opportunity Score"] = f"{opp_score}/100"
@@ -226,6 +237,8 @@ def audit_single_business(
             word_count=word_count,
             icebreaker_hook=icebreaker,
             load_time_seconds=fetch_res.elapsed_seconds,
+            is_js_rendered=is_js_rendered,
+            audited_page_type=audited_page_type,
             issues=issues,
             xlsx_row_data=xlsx_row,
             error_message=fetch_res.error_message,

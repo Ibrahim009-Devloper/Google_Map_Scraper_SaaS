@@ -35,6 +35,25 @@ class FetchResult:
     redirect_chain: List[str] = field(default_factory=list)
     has_robots: bool = False
     has_sitemap: bool = False
+    https_probe_success: Optional[bool] = None
+    https_probe_error: Optional[str] = None
+
+
+def probe_https_url(https_url: str, timeout: float = 3.5) -> Tuple[bool, Optional[str]]:
+    """Probes whether https:// endpoint is reachable with a valid SSL certificate."""
+    try:
+        r = requests.get(
+            https_url,
+            impersonate="chrome124",
+            timeout=timeout,
+            allow_redirects=True,
+            verify=True,
+        )
+        if r.status_code is not None:
+            return True, None
+    except Exception as exc:
+        return False, str(exc)
+    return False, "Unknown error probing HTTPS"
 
 
 _LEGACY_SSL_CTX = ssl.create_default_context()
@@ -180,6 +199,17 @@ def fetch_page_for_audit(
             # Check robots and sitemap
             has_robots, has_sitemap = check_robots_and_sitemap(final_url)
 
+            # Accurate SSL & HTTP Redirect Verification (Objective 2)
+            # If site returns 200 on plain HTTP, probe https:// to check if SSL works or is missing
+            https_probe_success = None
+            https_probe_error = None
+            if final_url.startswith("http://") and resp.status_code == 200:
+                parsed_u = urlsplit(final_url)
+                https_target = f"https://{parsed_u.netloc}{parsed_u.path or '/'}"
+                https_probe_success, https_probe_error = probe_https_url(https_target, timeout=3.5)
+                if https_probe_success is False and any(kw in (https_probe_error or "").lower() for kw in ["ssl", "certificate", "handshake", "tls"]):
+                    ssl_failed = True
+
             return FetchResult(
                 url=clean_url,
                 final_url=final_url,
@@ -193,6 +223,8 @@ def fetch_page_for_audit(
                 redirect_chain=redirect_chain,
                 has_robots=has_robots,
                 has_sitemap=has_sitemap,
+                https_probe_success=https_probe_success,
+                https_probe_error=https_probe_error,
             )
 
         except (RequestsError, Exception) as exc:

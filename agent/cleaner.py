@@ -299,6 +299,91 @@ def clean_website_url(raw_url: Optional[str]) -> Optional[str]:
         return url
 
 
+SOCIAL_TRACKING_KEYS = {
+    "igsh", "igshid", "mibextid", "ref", "ref_src", "next",
+    "viewasmember", "ved", "usg", "fbclid", "gclid", "rdid",
+    "mid", "ts", "sa", "sei", "sxsrf"
+}
+
+
+def clean_social_url(raw_url: Optional[str]) -> Optional[str]:
+    """
+    Sanitizes social media URLs (Facebook, Instagram, LinkedIn, WhatsApp):
+    - Strips all tracking junk (?igsh=, ?igshid=, ?mibextid=, ?utm_*, ?ref=, ?next=, ?viewAsMember=, &ved=, &usg=)
+    - Fixes malformed URLs where &ved=... or &usg=... is concatenated directly onto the path without '?'
+    - Validates resulting URL format
+    """
+    if not raw_url:
+        return None
+
+    url = str(raw_url).strip()
+    if not url:
+        return None
+
+    # Fix malformed URLs where &ved= or &usg= is concatenated directly onto the path without '?'
+    # E.g. https://www.facebook.com/mybiz&ved=2ahUKEwj... or path/page&usg=...
+    url = re.sub(r'(&amp;|&)?(?:ved|usg)=.*$', '', url)
+
+    if not url.startswith(("http://", "https://")):
+        url = "https://" + url
+
+    try:
+        parsed = urlparse(url)
+        netloc = parsed.netloc.lower()
+        if not netloc or "." not in netloc:
+            return None
+
+        # Filter query params
+        qs = parse_qs(parsed.query)
+        filtered_qs = {
+            k: v for k, v in qs.items()
+            if not k.lower().startswith("utm_") and k.lower() not in SOCIAL_TRACKING_KEYS
+        }
+        new_query = urlencode(filtered_qs, doseq=True)
+
+        # Normalize path
+        clean_path = parsed.path.rstrip('/') or '/'
+        clean_url = urlunparse((
+            parsed.scheme,
+            parsed.netloc,
+            clean_path,
+            parsed.params,
+            new_query,
+            ""
+        ))
+
+        # Basic validation: ensure proper scheme and host
+        if not (clean_url.startswith("https://") or clean_url.startswith("http://")):
+            return None
+
+        return clean_url
+    except Exception:
+        return None
+
+
+def clean_social_links(socials: Union[SocialLinks, dict, None]) -> Union[SocialLinks, dict, None]:
+    """
+    Cleans all fields in a SocialLinks instance or dictionary.
+    """
+    if socials is None:
+        return None
+
+    if isinstance(socials, dict):
+        return {
+            "facebook": clean_social_url(socials.get("facebook")),
+            "instagram": clean_social_url(socials.get("instagram")),
+            "linkedin": clean_social_url(socials.get("linkedin")),
+            "whatsapp": clean_social_url(socials.get("whatsapp")),
+        }
+
+    return SocialLinks(
+        facebook=clean_social_url(socials.facebook),
+        instagram=clean_social_url(socials.instagram),
+        linkedin=clean_social_url(socials.linkedin),
+        whatsapp=clean_social_url(socials.whatsapp),
+    )
+
+
 def clean_lead_item(lead: Union[LeadItem, dict], country_code: str = "bd") -> Union[LeadItem, dict]:
     """
     Applies comprehensive professional formatting and data cleaning to a LeadItem or lead dictionary.
@@ -309,6 +394,9 @@ def clean_lead_item(lead: Union[LeadItem, dict], country_code: str = "bd") -> Un
         lead["address"] = clean_address(lead.get("address"))
         lead["website_url"] = clean_website_url(lead.get("website_url"))
         lead["emails"] = clean_email_list(lead.get("emails", []))
+
+        if "social_links" in lead:
+            lead["social_links"] = clean_social_links(lead["social_links"])
 
         if lead.get("category"):
             lead["category"] = clean_business_name(lead["category"])
@@ -324,6 +412,7 @@ def clean_lead_item(lead: Union[LeadItem, dict], country_code: str = "bd") -> Un
     lead.address = clean_address(lead.address)
     lead.website_url = clean_website_url(lead.website_url)
     lead.emails = clean_email_list(lead.emails)
+    lead.social_links = clean_social_links(lead.social_links) or SocialLinks()
 
     if lead.category:
         lead.category = clean_business_name(lead.category)

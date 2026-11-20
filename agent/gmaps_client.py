@@ -106,25 +106,28 @@ def fetch_single_page(
             )
             if response.status_code == 200:
                 return response.text
-            elif response.status_code == 429:
-                wait_time = attempt * 3.0
-                print(f"[RateLimit] 429 received. Backing off for {wait_time}s...")
+            elif response.status_code in (429, 503):
+                # Exponential backoff with jitter on 429 Too Many Requests or 503 Service Unavailable
+                wait_time = (2 ** attempt) + random.uniform(0.5, 1.5)
+                print(f"[RateLimit/Server] HTTP {response.status_code} on attempt {attempt}/{retries}. Backing off for {wait_time:.1f}s...")
                 if stop_event and stop_event.wait(timeout=wait_time):
                     return None
                 elif not stop_event:
                     time.sleep(wait_time)
             else:
                 print(f"[Warning] HTTP {response.status_code} on attempt {attempt} for offset {offset}")
-                if stop_event and stop_event.wait(timeout=1.0):
+                wait_time = 1.0 + random.uniform(0.2, 0.8)
+                if stop_event and stop_event.wait(timeout=wait_time):
                     return None
                 elif not stop_event:
-                    time.sleep(1.0)
+                    time.sleep(wait_time)
         except Exception as e:
-            print(f"[Error] Network exception on attempt {attempt}: {e}")
-            if stop_event and stop_event.wait(timeout=1.5):
+            wait_time = (1.5 * attempt) + random.uniform(0.2, 0.8)
+            print(f"[Error] Network exception on attempt {attempt}/{retries}: {e}. Retrying in {wait_time:.1f}s...")
+            if stop_event and stop_event.wait(timeout=wait_time):
                 return None
             elif not stop_event:
-                time.sleep(1.5)
+                time.sleep(wait_time)
 
     return None
 
@@ -206,7 +209,7 @@ def fetch_all_pages_for_location(
             break
 
         # Polite human-like jitter delay between pages (interruptible on stop)
-        jitter_delay = random.uniform(0.8, 1.8)
+        jitter_delay = random.uniform(0.8, 2.0)
         if stop_event:
             if stop_event.wait(timeout=jitter_delay):
                 break

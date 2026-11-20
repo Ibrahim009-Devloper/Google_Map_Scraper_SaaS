@@ -4,6 +4,7 @@ Configuration settings for Autonomous AI Google Maps Lead Generation Agent.
 
 import os
 from pathlib import Path
+from typing import Optional
 from dotenv import load_dotenv
 
 # Load environment variables from .env file
@@ -23,8 +24,8 @@ DATA_DIR.mkdir(parents=True, exist_ok=True)
 
 # Database & Quota Settings
 TEMP_DB_PATH = DATA_DIR / "temp_cache.db"
-ANONYMOUS_LEAD_LIMIT = 1000
-ANONYMOUS_JOB_LIMIT = 1
+ANONYMOUS_LEAD_LIMIT = int(os.getenv("ANONYMOUS_LEAD_LIMIT", "100"))
+ANONYMOUS_JOB_LIMIT = int(os.getenv("ANONYMOUS_JOB_LIMIT", "1"))
 
 # LLM Configuration
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "").strip()
@@ -72,7 +73,8 @@ if not SUPABASE_ANON_KEY and SUPABASE_KEY:
 DEFAULT_IMPERSONATE = "chrome124"
 DEFAULT_TIMEOUT = 15
 WEB_TIMEOUT = 5
-MAX_CONCURRENT_ENRICHMENT = 15
+MAX_ENRICHMENT_WORKERS = int(os.getenv("MAX_ENRICHMENT_WORKERS", "6"))
+MAX_CONCURRENT_ENRICHMENT = MAX_ENRICHMENT_WORKERS
 
 # Pagination Defaults
 DEFAULT_MAX_PAGES_PER_SEARCH = 6

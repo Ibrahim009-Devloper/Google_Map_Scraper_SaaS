@@ -10,6 +10,44 @@ AuditStatus = Literal["Pass", "Warning", "Fail", "Unverified"]
 Priority = Literal["Critical", "High", "Medium", "Low", "None"]
 Confidence = Literal["High", "Medium", "Low", "Unverified"]
 
+# Metro and neighborhood relationships for local SEO keyword matching
+METRO_NEIGHBORHOOD_MAPPINGS: Dict[str, List[str]] = {
+    # NYC
+    "flushing": ["queens", "new york", "nyc", "new york city"],
+    "astoria": ["queens", "new york", "nyc", "new york city"],
+    "long island city": ["queens", "new york", "nyc", "new york city"],
+    "jamaica": ["queens", "new york", "nyc", "new york city"],
+    "brooklyn": ["new york", "nyc", "new york city", "kings county"],
+    "williamsburg": ["brooklyn", "new york", "nyc", "new york city"],
+    "manhattan": ["new york", "nyc", "new york city"],
+    "harlem": ["manhattan", "new york", "nyc", "new york city"],
+    "bronx": ["new york", "nyc", "new york city"],
+    "staten island": ["new york", "nyc", "new york city"],
+    "queens": ["new york", "nyc", "new york city"],
+    # Los Angeles
+    "hollywood": ["los angeles", "la"],
+    "van nuys": ["los angeles", "la", "san fernando valley"],
+    "north hollywood": ["los angeles", "la"],
+    "santa monica": ["los angeles", "la"],
+    "pasadena": ["los angeles", "la"],
+    # Chicago
+    "lincoln park": ["chicago"],
+    "lakeview": ["chicago"],
+    "evanston": ["chicago"],
+    # Houston
+    "woodlands": ["the woodlands", "houston"],
+    "katy": ["houston"],
+    "sugar land": ["houston"],
+    # Miami
+    "miami beach": ["miami", "south beach"],
+    "coral gables": ["miami"],
+    "doral": ["miami"],
+    # Boston
+    "brookline": ["boston", "greater boston"],
+    "cambridge": ["boston", "greater boston"],
+    "somerville": ["boston", "greater boston"],
+}
+
 
 class AuditIssue(BaseModel):
     """Represents the outcome and evidence of a single SEO check."""
@@ -63,10 +101,10 @@ class AuditInput(BaseModel):
         actual = self.get_actual_city()
         if actual and actual.strip():
             candidates.append(actual.strip())
-        if self.target_city and self.target_city.strip():
-            candidates.append(self.target_city.strip())
         if self.city and self.city.strip():
             candidates.append(self.city.strip())
+        if self.target_city and self.target_city.strip():
+            candidates.append(self.target_city.strip())
 
         seen = set()
         clean_list = []
@@ -75,6 +113,12 @@ class AuditInput(BaseModel):
             if c_low and c_low not in seen:
                 seen.add(c_low)
                 clean_list.append(c.strip())
+                # Add mapped parent metro and sister areas
+                if c_low in METRO_NEIGHBORHOOD_MAPPINGS:
+                    for parent_metro in METRO_NEIGHBORHOOD_MAPPINGS[c_low]:
+                        if parent_metro not in seen:
+                            seen.add(parent_metro)
+                            clean_list.append(parent_metro.title())
         return clean_list
 
     def get_primary_city(self) -> str:
@@ -82,10 +126,10 @@ class AuditInput(BaseModel):
         actual = self.get_actual_city()
         if actual:
             return actual
-        if self.target_city and self.target_city.strip():
-            return self.target_city.strip()
         if self.city and self.city.strip():
             return self.city.strip()
+        if self.target_city and self.target_city.strip():
+            return self.target_city.strip()
         return ""
 
     def model_post_init(self, __context):
@@ -114,6 +158,8 @@ class SEOReport(BaseModel):
     word_count: int = 0
     icebreaker_hook: str = ""
     load_time_seconds: Optional[float] = None
+    is_js_rendered: bool = False
+    audited_page_type: str = "homepage"
     issues: Dict[str, AuditIssue] = Field(default_factory=dict)
     xlsx_row_data: Dict[str, str] = Field(default_factory=dict)
     error_message: Optional[str] = None

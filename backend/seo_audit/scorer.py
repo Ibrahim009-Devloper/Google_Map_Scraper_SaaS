@@ -15,24 +15,29 @@ def calculate_seo_health_and_pitch(
     is_https: bool = True,
     business_rating: Optional[float] = None,
     reviews_count: Optional[int] = None,
+    is_js_rendered: bool = False,
 ) -> Tuple[Optional[int], str]:
     """
     Computes:
     1. SEO Health Score (0-100): 100 is pristine. Penalties deducted for verified flaws.
-       Returns None if site is not tested or has no website.
+       Returns None if site is not tested, client-side JS rendered, or has no website.
     2. Lead Pitch Priority:
        - Critical Pitch (No Website)
+       - Manual Review (JS Site) (if CSR/SPA shell detected)
        - Not Tested (if checks were unverified/unreachable)
        - Critical Pitch (for active indexing blockers or critical breakdowns)
        - High Value (for substantial actionable gaps or high-reputation businesses with missing local signals)
        - Moderate (medium on-page gaps)
-       - Low Priority - Well Optimized (healthy sites)
+       - Low Priority (Healthy Site) / Low Priority - Well Optimized (healthy sites)
     """
     if not has_website:
         return None, "Critical Pitch (No Website)"
 
     if not issues:
         return None, "Not Tested"
+
+    if is_js_rendered:
+        return None, "Manual Review (JS Site)"
 
     penalties_incurred = 0
     verified_checks_count = 0
@@ -61,13 +66,13 @@ def calculate_seo_health_and_pitch(
 
     health_score = max(0, min(100, 100 - penalties_incurred))
 
-    # Lead Pitch Priority: Decoupled commercial valuation (Stop marking 88/100 sites as Critical Pitch!)
+    # Lead Pitch Priority: Decoupled commercial valuation
     # Base Lead Pitch Priority strictly on SEO Health Score and true critical blockers (noindex or unencrypted HTTP):
-    # - If noindex is present OR site is unencrypted HTTP OR score < 50: Critical Pitch
-    # - Else if 50 <= score < 70: High Value
-    # - Else if 70 <= score < 85: Moderate
-    # - Else (score >= 85): Low Priority (Healthy Site)
-    if active_noindex or not is_https or health_score < 50 or server_error:
+    # TTFB alone NEVER triggers Critical Pitch.
+    ssl_issue = issues.get("ssl_redirect")
+    ssl_critical = bool(ssl_issue and ssl_issue.audit_status == "Fail") or (not is_https and not (ssl_issue and ssl_issue.audit_status == "Warning"))
+
+    if active_noindex or ssl_critical or health_score < 50 or server_error:
         pitch_priority = "Critical Pitch"
     elif health_score < 70:
         pitch_priority = "High Value"

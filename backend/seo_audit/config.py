@@ -7,8 +7,11 @@ import os
 # Audit execution parameters
 SEO_AUDIT_TIMEOUT = int(os.getenv("SEO_AUDIT_TIMEOUT", "10"))
 SEO_AUDIT_MAX_RETRIES = int(os.getenv("SEO_AUDIT_MAX_RETRIES", "2"))
-SEO_SLOW_LOAD_THRESHOLD = float(os.getenv("SEO_SLOW_LOAD_THRESHOLD", "4.0"))
-SEO_MODERATE_LOAD_THRESHOLD = float(os.getenv("SEO_MODERATE_LOAD_THRESHOLD", "2.0"))
+TTFB_WARNING_SEC = float(os.getenv("TTFB_WARNING_SEC", "2.0"))
+TTFB_HIGH_SEC = float(os.getenv("TTFB_HIGH_SEC", "4.0"))
+# Backward compatibility aliases
+SEO_SLOW_LOAD_THRESHOLD = TTFB_HIGH_SEC
+SEO_MODERATE_LOAD_THRESHOLD = TTFB_WARNING_SEC
 PAGESPEED_API_KEY = os.getenv("PAGESPEED_API_KEY", "").strip()
 
 # Complete 21 Standard Agency-Grade Local SEO Columns

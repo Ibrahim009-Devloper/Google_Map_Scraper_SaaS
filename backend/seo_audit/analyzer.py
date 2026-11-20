@@ -12,9 +12,21 @@ from bs4 import BeautifulSoup
 
 from backend.seo_audit.models import AuditIssue, AuditInput
 from backend.seo_audit.fetcher import FetchResult
-from backend.seo_audit.config import SEO_SLOW_LOAD_THRESHOLD, SEO_MODERATE_LOAD_THRESHOLD
+from backend.seo_audit.config import (
+    TTFB_WARNING_SEC,
+    TTFB_HIGH_SEC,
+    SEO_SLOW_LOAD_THRESHOLD,
+    SEO_MODERATE_LOAD_THRESHOLD,
+)
 
 GENERIC_TITLES = {"home", "welcome", "untitled", "homepage", "index", "default"}
+
+# Stopwords for category matching (stop matching on generic terms like contractor, company)
+GENERIC_CATEGORY_STOPWORDS = {
+    "contractor", "contractors", "company", "services", "service",
+    "inc", "group", "llc", "corp", "corporation", "ltd", "agency",
+    "solutions", "enterprise", "pros", "pro",
+}
 
 # Common Schema.org LocalBusiness types and subtypes
 LOCAL_BUSINESS_TYPES = {
@@ -49,6 +61,44 @@ def truncate_preview(text: str, max_len: int = 35) -> str:
     if len(clean) > max_len:
         return clean[:max_len] + "..."
     return clean
+
+
+def is_js_spa_shell(soup: BeautifulSoup, word_count: int) -> bool:
+    """
+    Detects client-side rendered (CSR/SPA) shells where static HTML
+    lacks server-rendered DOM nodes (e.g. React/Vue/Angular/Next.js).
+    Criteria:
+    - visible word count < 30
+    - AND (mount point #root, #app, #__next, etc. OR noscript JS warning OR empty body with script bundles)
+    """
+    if not soup or word_count >= 30:
+        return False
+
+    # 1. Mount point IDs or elements common to SPA frameworks
+    for mount_id in ("root", "app", "__next", "___gatsby", "main-content", "app-root"):
+        if soup.find(id=mount_id) is not None or soup.find(mount_id) is not None:
+            return True
+
+    # 2. Noscript tags warning about required JavaScript
+    for ns in soup.find_all("noscript"):
+        ns_text = ns.get_text().lower()
+        if any(phrase in ns_text for phrase in (
+            "javascript", "enable js", "enable javascript",
+            "requires javascript", "need to enable javascript", "turn on javascript"
+        )):
+            return True
+
+    # 3. Empty or near-empty body combined with script tags
+    scripts = soup.find_all("script")
+    if word_count < 15 and len(scripts) >= 1:
+        for s in scripts:
+            src = (s.get("src") or "").lower()
+            if any(b in src for b in ("main.", "bundle.", "chunk.", "app.", "index.", "runtime.", "vendor.", "react", "vue", "angular")):
+                return True
+        if len(scripts) >= 2:
+            return True
+
+    return False
 
 
 # ============================================================================
@@ -138,6 +188,7 @@ def check_ssl_redirect_status(fetch_res: FetchResult) -> Tuple[AuditIssue, str]:
     """Check 2: Decoupled SSL & HTTPS Redirect Status (Section 2.2)."""
     final_url = fetch_res.final_url or fetch_res.url
     is_https = final_url.startswith("https://") and not fetch_res.ssl_failed
+    init_code = fetch_res.initial_status_code
 
     if fetch_res.status_code is None:
         summary = "Unreachable Host"
@@ -153,30 +204,63 @@ def check_ssl_redirect_status(fetch_res: FetchResult) -> Tuple[AuditIssue, str]:
             xlsx_summary=summary,
         ), summary
 
-    if not is_https:
-        summary = "Critical: Unencrypted HTTP (Missing 301 Redirect to HTTPS)"
+    if is_https:
+        if init_code in (301, 302, 307, 308) or (fetch_res.url.startswith("http://") and final_url.startswith("https://")):
+            summary = "Pass: HTTP Redirects Cleanly to HTTPS"
+            evidence = f"HTTP request redirected cleanly to secure HTTPS: {init_code or 301} -> {final_url}."
+        else:
+            summary = "Pass: Valid SSL & Enforced HTTPS"
+            evidence = f"Secure HTTPS connection verified on {final_url}."
         return AuditIssue(
             check_name="ssl_redirect",
-            audit_status="Fail",
-            priority="High",
-            severity="High",
+            audit_status="Pass",
+            priority="None",
+            severity="None",
             confidence="High",
             evidence_url=final_url,
-            evidence=f"Website is served over insecure HTTP ({final_url}) without SSL encryption.",
-            recommended_fix="Install a valid SSL certificate and configure a strict 301 redirect to HTTPS.",
+            evidence=evidence,
+            recommended_fix=None,
             xlsx_summary=summary,
         ), summary
 
-    summary = "Pass: Valid SSL & Enforced HTTPS"
+    # Plain HTTP (200): Probe if HTTPS works with valid SSL
+    https_works = bool(getattr(fetch_res, "https_probe_success", None) is True)
+    if getattr(fetch_res, "https_probe_success", None) is None and not fetch_res.ssl_failed and fetch_res.status_code == 200:
+        try:
+            from urllib.parse import urlsplit
+            from curl_cffi import requests as c_req
+            p = urlsplit(final_url)
+            https_target = f"https://{p.netloc}{p.path or '/'}"
+            r = c_req.get(https_target, impersonate="chrome124", timeout=3.0, verify=True, allow_redirects=True)
+            if r.status_code is not None:
+                https_works = True
+        except Exception:
+            https_works = False
+
+    if https_works:
+        summary = "Warning: HTTPS Available but Missing 301 Auto-Redirect"
+        return AuditIssue(
+            check_name="ssl_redirect",
+            audit_status="Warning",
+            priority="Medium",
+            severity="Medium",
+            confidence="High",
+            evidence_url=final_url,
+            evidence=f"Valid SSL certificate exists on HTTPS, but plain HTTP requests ({final_url}) do not automatically redirect (301) to HTTPS.",
+            recommended_fix="Configure a 301 permanent redirect from HTTP to HTTPS in server configuration.",
+            xlsx_summary=summary,
+        ), summary
+
+    summary = "Critical: Unencrypted HTTP (Missing 301 Redirect to HTTPS)"
     return AuditIssue(
         check_name="ssl_redirect",
-        audit_status="Pass",
-        priority="None",
-        severity="None",
+        audit_status="Fail",
+        priority="Critical",
+        severity="Critical",
         confidence="High",
         evidence_url=final_url,
-        evidence=f"Secure HTTPS connection verified on {final_url}.",
-        recommended_fix=None,
+        evidence=f"Website is served over insecure HTTP ({final_url}) and HTTPS connection fails or lacks a valid SSL certificate.",
+        recommended_fix="Install a valid SSL certificate and configure a strict 301 redirect to HTTPS.",
         xlsx_summary=summary,
     ), summary
 
@@ -214,8 +298,8 @@ def check_server_response_ttfb(fetch_res: FetchResult) -> Tuple[AuditIssue, str]
             xlsx_summary=summary,
         ), summary
 
-    if elapsed <= SEO_MODERATE_LOAD_THRESHOLD:
-        summary = f"Pass: TTFB {elapsed}s (Acceptable Server Latency)"
+    if elapsed <= TTFB_WARNING_SEC:
+        summary = f"Pass: TTFB {elapsed}s (Acceptable Server Latency <= {TTFB_WARNING_SEC}s)"
         return AuditIssue(
             check_name="server_response_ttfb",
             audit_status="Pass",
@@ -228,8 +312,8 @@ def check_server_response_ttfb(fetch_res: FetchResult) -> Tuple[AuditIssue, str]
             xlsx_summary=summary,
         ), summary
 
-    if elapsed <= SEO_SLOW_LOAD_THRESHOLD:
-        summary = f"Warning: TTFB {elapsed}s (Moderate Server Delay > 1.8s)"
+    if elapsed <= TTFB_HIGH_SEC:
+        summary = f"Warning: TTFB {elapsed}s (Moderate Server Delay > {TTFB_WARNING_SEC}s)"
         return AuditIssue(
             check_name="server_response_ttfb",
             audit_status="Warning",
@@ -237,12 +321,12 @@ def check_server_response_ttfb(fetch_res: FetchResult) -> Tuple[AuditIssue, str]
             severity="Medium",
             confidence="High",
             evidence_url=final_url,
-            evidence=f"Server took {elapsed}s to respond with initial HTML. Target is < 1.0s.",
+            evidence=f"Server took {elapsed}s to respond with initial HTML. Target is < {TTFB_WARNING_SEC}s.",
             recommended_fix="Enable server-side object caching (Redis/OPcache) and utilize a fast CDN (Cloudflare).",
             xlsx_summary=summary,
         ), summary
 
-    summary = f"High Issue: TTFB {elapsed}s (Slow Server Response > 4.0s)"
+    summary = f"High Issue: TTFB {elapsed}s (Slow Server Response > {TTFB_HIGH_SEC}s)"
     return AuditIssue(
         check_name="server_response_ttfb",
         audit_status="Fail",
@@ -250,7 +334,7 @@ def check_server_response_ttfb(fetch_res: FetchResult) -> Tuple[AuditIssue, str]
         severity="High",
         confidence="High",
         evidence_url=final_url,
-        evidence=f"Severely lagging TTFB: {elapsed}s. Major crawler and visitor bounce risk.",
+        evidence=f"Severely lagging TTFB: {elapsed}s (> {TTFB_HIGH_SEC}s). Major crawler and visitor bounce risk.",
         recommended_fix="Upgrade hosting infrastructure, enable page-level edge caching, and optimize backend DB queries.",
         xlsx_summary=summary,
     ), summary
@@ -459,16 +543,19 @@ def extract_raw_title_and_status(
     soup: BeautifulSoup,
     city: Optional[str] = None,
     category: Optional[str] = None,
+    audited_page_type: str = "homepage",
 ) -> Tuple[AuditIssue, str, str]:
     """Check 7 & 8: Extracted Title Text and Title Tag Status (Fix #6)."""
+    page_name = audited_page_type.capitalize()
     if not soup:
         summary = "Critical On-Page: Missing <title> Tag"
         return AuditIssue(
             check_name="title_tag",
             audit_status="Fail",
             priority="Critical",
-            evidence="No HTML title tag found.",
-            recommended_fix="Add a descriptive <title> tag.",
+            severity="Critical",
+            evidence=f"No HTML title tag found on {audited_page_type}.",
+            recommended_fix=f"Add a descriptive <title> tag on {audited_page_type}.",
             xlsx_summary=summary,
         ), "", summary
 
@@ -481,7 +568,8 @@ def extract_raw_title_and_status(
             check_name="title_tag",
             audit_status="Fail",
             priority="Critical",
-            evidence="<title> tag is missing or completely empty.",
+            severity="Critical",
+            evidence=f"<title> tag is missing or completely empty on {audited_page_type}.",
             recommended_fix=f"Add a descriptive title tag: e.g. '{category or 'Services'} in {city or 'City'} | Company Name'.",
             xlsx_summary=summary,
         ), "", summary
@@ -490,12 +578,35 @@ def extract_raw_title_and_status(
     t_clean = raw_title.lower()
     preview = truncate_preview(raw_title, max_len=35)
 
-    if t_len < 30 or t_clean in GENERIC_TITLES:
+    # Title Quality: Flag titles that are raw URLs or generic prefixes as High Issue
+    is_raw_url = any(u in t_clean for u in ("www.", ".com", ".net", ".org", "http://", "https://"))
+    is_generic = (
+        t_clean in GENERIC_TITLES or
+        any(t_clean.startswith(prefix) for prefix in ("home -", "home |", "home :", "welcome to", "untitled"))
+    )
+
+    if is_raw_url or is_generic:
+        reason = "Raw URL in Title" if is_raw_url else "Generic Title"
+        summary = f'High Issue: {reason} ("{preview}")'
+        return AuditIssue(
+            check_name="title_tag",
+            audit_status="Fail",
+            priority="High",
+            severity="High",
+            confidence="High",
+            evidence=f"Title tag is unoptimized ({reason}): '{raw_title}'. Missing high-value local search keywords.",
+            recommended_fix=f"Replace with a targeted title tag: e.g. '{category or 'Services'} in {city or 'City'} | Company Name'.",
+            xlsx_summary=summary,
+        ), raw_title, summary
+
+    if t_len < 30:
         summary = f'High Issue: Too Short ({t_len} chars: "{preview}") - Missing Keyword & City'
         return AuditIssue(
             check_name="title_tag",
             audit_status="Fail",
             priority="High",
+            severity="High",
+            confidence="High",
             evidence=f"Title tag is under-optimized at only {t_len} chars: '{raw_title}'. Missing high-value local search keywords.",
             recommended_fix=f"Expand title to 30-60 characters including '{category or 'Services'} in {city or 'City'}'.",
             xlsx_summary=summary,
@@ -507,8 +618,10 @@ def extract_raw_title_and_status(
             check_name="title_tag",
             audit_status="Warning",
             priority="Medium",
+            severity="Medium",
+            confidence="High",
             evidence=f"Title is {t_len} characters long and will be truncated in Google desktop & mobile search snippets.",
-            recommended_fix=f"Condense title to 30-60 characters.",
+            recommended_fix="Condense title to 30-60 characters.",
             xlsx_summary=summary,
         ), raw_title, summary
 
@@ -517,6 +630,8 @@ def extract_raw_title_and_status(
         check_name="title_tag",
         audit_status="Pass",
         priority="None",
+        severity="None",
+        confidence="High",
         evidence=f"Title tag is ideal length ({t_len} chars): '{raw_title}'.",
         recommended_fix=None,
         xlsx_summary=summary,
@@ -524,13 +639,15 @@ def extract_raw_title_and_status(
 
 
 def check_meta_description_status(soup: BeautifulSoup) -> Tuple[AuditIssue, str]:
-    """Check 9: Meta Description Status."""
+    """Check 9: Meta Description Status (Target: 120-160 chars)."""
     if not soup:
         summary = "High Issue: Missing <meta name=\"description\"> (Hurts Organic CTR)"
         return AuditIssue(
             check_name="meta_description",
             audit_status="Fail",
             priority="High",
+            severity="High",
+            confidence="High",
             evidence="Meta description missing.",
             recommended_fix="Add descriptive meta description.",
             xlsx_summary=summary,
@@ -545,35 +662,51 @@ def check_meta_description_status(soup: BeautifulSoup) -> Tuple[AuditIssue, str]
             check_name="meta_description",
             audit_status="Fail",
             priority="High",
+            severity="High",
+            confidence="High",
             evidence="Homepage lacks a meta description tag. Google will display random snippet text in search results.",
-            recommended_fix="Add a 120-158 character meta description with a clear call-to-action and local phone number.",
+            recommended_fix="Add a 120-160 character meta description with a clear call-to-action and local phone number.",
             xlsx_summary=summary,
         ), summary
 
     d_len = len(desc_content)
-    if d_len < 70:
-        summary = f"Warning: Too Short ({d_len} chars; Target: 120-158 chars)"
+    if d_len < 120:
+        summary = f"Warning: Too Short ({d_len} chars; Target: 120-160 chars)"
         return AuditIssue(
             check_name="meta_description",
             audit_status="Warning",
             priority="Low",
-            evidence=f"Meta description is only {d_len} characters: '{desc_content}'.",
-            recommended_fix="Expand description to 120-158 characters highlighting key business benefits.",
+            severity="Low",
+            confidence="High",
+            evidence=f"Meta description is only {d_len} characters: '{desc_content}'. Optimal length is 120-160 characters.",
+            recommended_fix="Expand description to 120-160 characters highlighting key business benefits.",
             xlsx_summary=summary,
         ), summary
 
-    if d_len > 165:
-        summary = f"Minor: {d_len} chars (Truncated in SERP; Optimal: 120-158 chars)"
+    if d_len > 160:
+        summary = f"Minor: {d_len} chars (Truncated in SERP; Optimal: 120-160 chars)"
         return AuditIssue(
             check_name="meta_description",
             audit_status="Warning",
             priority="Low",
-            evidence=f"Meta description is {d_len} characters and exceeds Google's SERP display cutoff.",
-            recommended_fix="Trim meta description to under 158 characters.",
+            severity="Low",
+            confidence="High",
+            evidence=f"Meta description is {d_len} characters and exceeds Google's SERP display cutoff (160 characters).",
+            recommended_fix="Trim meta description to under 160 characters.",
             xlsx_summary=summary,
         ), summary
 
     summary = f"Pass: Optimal ({d_len} chars)"
+    return AuditIssue(
+        check_name="meta_description",
+        audit_status="Pass",
+        priority="None",
+        severity="None",
+        confidence="High",
+        evidence=f"Well-crafted meta description ({d_len} chars): '{desc_content[:45]}...'.",
+        recommended_fix=None,
+        xlsx_summary=summary,
+    ), summary
     return AuditIssue(
         check_name="meta_description",
         audit_status="Pass",
@@ -826,10 +959,13 @@ def matches_category_synonyms(category: Optional[str], text: str) -> bool:
             if any(syn in text_lower for syn in syns):
                 return True
 
-    # 2. General stem and word boundary matching
+    # 2. General stem and word boundary matching excluding generic stopwords
     words = clean_words(cat_lower)
+    core_words = [w for w in words if w not in GENERIC_CATEGORY_STOPWORDS]
+    target_words = core_words if core_words else words
+
     text_words = set(clean_words(text_lower))
-    for w in words:
+    for w in target_words:
         if len(w) < 3:
             continue
         if w in text_words or w in text_lower:
@@ -875,8 +1011,22 @@ def check_local_keywords(
     category: Optional[str] = None,
     candidate_cities: Optional[List[str]] = None,
     primary_city: Optional[str] = None,
+    address: Optional[str] = None,
 ) -> Tuple[AuditIssue, str]:
     """Check 14: Target City & Category presence in Title / H1 (Fix #1 & Fix #2)."""
+    # If address is explicitly provided as empty string, skip check
+    if address is not None and not address.strip():
+        summary = "Skipped (No GBP Address)"
+        return AuditIssue(
+            check_name="local_keywords",
+            audit_status="Pass",
+            priority="None",
+            severity="None",
+            confidence="High",
+            evidence="Full physical street address was not provided in GBP listing; local keyword match check skipped.",
+            recommended_fix=None,
+            xlsx_summary=summary,
+        ), summary
     valid_candidates = [c.strip().lower() for c in (candidate_cities or []) if c and c.strip()]
     if city and city.strip() and city.strip().lower() not in valid_candidates:
         valid_candidates.append(city.strip().lower())
@@ -1163,7 +1313,7 @@ def check_maps_embed(soup: BeautifulSoup) -> Tuple[AuditIssue, str]:
     ), summary
 
 
-def check_gbp_category_alignment(soup: BeautifulSoup, category: Optional[str] = None) -> Tuple[AuditIssue, str]:
+def check_gbp_category_alignment(soup: BeautifulSoup, category: Optional[str] = None, audited_page_type: str = "homepage") -> Tuple[AuditIssue, str]:
     """Check 18: GBP Category Alignment with Title / H1 (Fix #2)."""
     if not category:
         summary = "Unverified (No GBP Category)"
@@ -1197,13 +1347,15 @@ def check_gbp_category_alignment(soup: BeautifulSoup, category: Optional[str] = 
             xlsx_summary=summary,
         ), summary
 
-    summary = f"Misaligned: Category '{category}' missing from Title & H1"
+    summary = f"Warning: Category Keyword Missing ('{category}' missing from Title & H1)"
     return AuditIssue(
         check_name="gbp_category_alignment",
         audit_status="Warning",
         priority="Medium",
-        evidence=f"Primary Google Business Profile category '{category}' does not appear in Title or H1 tags.",
-        recommended_fix=f"Align on-page messaging by adding '{category}' directly to your title tag and main header.",
+        severity="Medium",
+        confidence="High",
+        evidence=f"Primary Google Business Profile category '{category}' (core niche keyword) does not appear in Title or H1 tags on {audited_page_type}.",
+        recommended_fix=f"Align on-page messaging by adding '{category}' directly to your {audited_page_type} title tag and main header.",
         xlsx_summary=summary,
     ), summary
 
@@ -1217,9 +1369,19 @@ class CheckRunResult(dict):
     Dual-compatibility container for SEO check outputs.
     Acts as both a dictionary of AuditIssue objects (for legacy tests/callers),
     and exposes structured metadata attributes:
-    .issues, .xlsx_row, .extracted_title, .extracted_h1, .word_count, .is_https.
+    .issues, .xlsx_row, .extracted_title, .extracted_h1, .word_count, .is_https, .is_js_rendered, .audited_page_type.
     """
-    def __init__(self, issues: Dict[str, AuditIssue], xlsx_row: Dict[str, str], extracted_title: str, extracted_h1: str, word_count: int, is_https: bool):
+    def __init__(
+        self,
+        issues: Dict[str, AuditIssue],
+        xlsx_row: Dict[str, str],
+        extracted_title: str,
+        extracted_h1: str,
+        word_count: int,
+        is_https: bool,
+        is_js_rendered: bool = False,
+        audited_page_type: str = "homepage",
+    ):
         super().__init__(issues)
         self.issues = issues
         self.xlsx_row = xlsx_row
@@ -1227,6 +1389,8 @@ class CheckRunResult(dict):
         self.extracted_h1 = extracted_h1
         self.word_count = word_count
         self.is_https = is_https
+        self.is_js_rendered = is_js_rendered
+        self.audited_page_type = audited_page_type
 
     def __getitem__(self, key):
         if key == "issues":
@@ -1241,6 +1405,10 @@ class CheckRunResult(dict):
             return self.word_count
         if key == "is_https":
             return self.is_https
+        if key == "is_js_rendered":
+            return self.is_js_rendered
+        if key == "audited_page_type":
+            return self.audited_page_type
         return super().__getitem__(key)
 
     def get(self, key, default=None):
@@ -1256,6 +1424,10 @@ class CheckRunResult(dict):
             return self.word_count
         if key == "is_https":
             return self.is_https
+        if key == "is_js_rendered":
+            return self.is_js_rendered
+        if key == "audited_page_type":
+            return self.audited_page_type
         return super().get(key, default)
 
 
@@ -1264,10 +1436,15 @@ def run_all_seo_checks(input_data: AuditInput, fetch_res: FetchResult) -> CheckR
     Executes all 18 check engines and packages results into:
     - issues: Dict[str, AuditIssue]
     - xlsx_row: Dict[str, str] (covering all technical & local signals)
-    - metadata: extracted_title, extracted_h1, word_count, is_https
+    - metadata: extracted_title, extracted_h1, word_count, is_https, is_js_rendered, audited_page_type
     """
     issues: Dict[str, AuditIssue] = {}
     xlsx_row: Dict[str, str] = {}
+
+    target_url_str = fetch_res.final_url or fetch_res.url or (input_data.url if input_data else "")
+    parsed_u = urlparse(target_url_str)
+    is_subpage = bool(parsed_u.path and parsed_u.path not in ("", "/"))
+    audited_page_type = "landing page" if is_subpage else "homepage"
 
     # 1. Technical Foundation
     iss_url, s_url = check_final_url_and_status(fetch_res)
@@ -1348,6 +1525,8 @@ def run_all_seo_checks(input_data: AuditInput, fetch_res: FetchResult) -> CheckR
             extracted_h1="",
             word_count=0,
             is_https=False,
+            is_js_rendered=False,
+            audited_page_type=audited_page_type,
         )
 
     soup = BeautifulSoup(fetch_res.html, "html.parser")
@@ -1371,7 +1550,9 @@ def run_all_seo_checks(input_data: AuditInput, fetch_res: FetchResult) -> CheckR
     primary_city = input_data.get_primary_city() if hasattr(input_data, "get_primary_city") else (input_data.city or "")
     candidate_cities = input_data.get_candidate_cities() if hasattr(input_data, "get_candidate_cities") else ([input_data.city] if input_data.city else [])
 
-    iss_title, raw_title, s_title = extract_raw_title_and_status(soup, primary_city, input_data.category)
+    iss_title, raw_title, s_title = extract_raw_title_and_status(
+        soup, primary_city, input_data.category, audited_page_type=audited_page_type
+    )
     issues["title_tag"] = iss_title
     xlsx_row["Extracted Title Text"] = raw_title
     xlsx_row["Title Tag Status"] = s_title
@@ -1397,8 +1578,32 @@ def run_all_seo_checks(input_data: AuditInput, fetch_res: FetchResult) -> CheckR
     issues["image_alt"] = iss_alt
     xlsx_row["Image Alt Text Gap"] = s_alt
 
-    # 14. Local Keywords (Fix #1 & #2)
-    iss_kw, s_kw = check_local_keywords(soup, input_data.city, input_data.category, candidate_cities=candidate_cities, primary_city=primary_city)
+    # Detect CSR / SPA shell (Objective 1)
+    is_js_rendered = is_js_spa_shell(soup, word_count)
+
+    # 14. Local Keywords (Fix #1 & #2, and City State Leak fix)
+    has_full_address = bool(input_data.address and input_data.address.strip())
+    if not has_full_address:
+        iss_kw = AuditIssue(
+            check_name="local_keywords",
+            audit_status="Pass",
+            priority="None",
+            severity="None",
+            confidence="High",
+            evidence="Skipped: No physical GBP address provided in lead record.",
+            recommended_fix=None,
+            xlsx_summary="Skipped (No GBP Address)",
+        )
+        s_kw = "Skipped (No GBP Address)"
+    else:
+        iss_kw, s_kw = check_local_keywords(
+            soup,
+            input_data.city,
+            input_data.category,
+            candidate_cities=candidate_cities,
+            primary_city=primary_city,
+            address=input_data.address,
+        )
     issues["local_keywords"] = iss_kw
     xlsx_row["Local Keyword Status"] = s_kw
 
@@ -1418,9 +1623,63 @@ def run_all_seo_checks(input_data: AuditInput, fetch_res: FetchResult) -> CheckR
     xlsx_row["Google Maps Embed"] = s_embed
 
     # 18. GBP Category Alignment
-    iss_cat, s_cat = check_gbp_category_alignment(soup, input_data.category)
+    iss_cat, s_cat = check_gbp_category_alignment(soup, input_data.category, audited_page_type=audited_page_type)
     issues["gbp_category_alignment"] = iss_cat
     xlsx_row["GBP Category Alignment"] = s_cat
+
+    # Zero-Browser JS/SPA False-Positive Fix (Objective 1):
+    # If client-side rendered shell detected, skip on-page penalties:
+    # 0 words, No H1, Missing NAP.
+    if is_js_rendered:
+        # Override word_count
+        iss_words = AuditIssue(
+            check_name="word_count",
+            audit_status="Unverified",
+            priority="None",
+            severity="None",
+            confidence="Unverified",
+            evidence_url=fetch_res.final_url or fetch_res.url,
+            evidence="Client-side rendered (SPA/JS) shell detected. Static HTML word count is not indicative of on-page content.",
+            recommended_fix=None,
+            xlsx_summary="N/A (JS-Rendered Site)",
+        )
+        s_words = "N/A (JS-Rendered Site)"
+        issues["word_count"] = iss_words
+        xlsx_row["Homepage Word Count"] = s_words
+
+        # Override H1 if missing
+        if iss_h1.audit_status == "Fail":
+            iss_h1 = AuditIssue(
+                check_name="h1_status",
+                audit_status="Unverified",
+                priority="None",
+                severity="None",
+                confidence="Unverified",
+                evidence_url=fetch_res.final_url or fetch_res.url,
+                evidence="Client-side rendered (SPA/JS) shell detected. Heading structure is rendered dynamically via JavaScript.",
+                recommended_fix=None,
+                xlsx_summary="N/A (JS-Rendered Site)",
+            )
+            s_h1 = "N/A (JS-Rendered Site)"
+            issues["h1_status"] = iss_h1
+            xlsx_row["H1 Tag Status"] = s_h1
+
+        # Override NAP if missing
+        if iss_nap.audit_status in ("Fail", "Warning"):
+            iss_nap = AuditIssue(
+                check_name="nap_consistency",
+                audit_status="Unverified",
+                priority="None",
+                severity="None",
+                confidence="Unverified",
+                evidence_url=fetch_res.final_url or fetch_res.url,
+                evidence="Client-side rendered (SPA/JS) shell detected. Contact details and address are rendered via client-side JavaScript.",
+                recommended_fix=None,
+                xlsx_summary="N/A (JS-Rendered Site)",
+            )
+            s_nap = "N/A (JS-Rendered Site)"
+            issues["nap_consistency"] = iss_nap
+            xlsx_row["NAP Status"] = s_nap
 
     # Aliases for legacy compatibility
     issues["website_speed"] = iss_ttfb
@@ -1453,4 +1712,6 @@ def run_all_seo_checks(input_data: AuditInput, fetch_res: FetchResult) -> CheckR
         extracted_h1=raw_h1,
         word_count=word_count,
         is_https=is_https,
+        is_js_rendered=is_js_rendered,
+        audited_page_type=audited_page_type,
     )

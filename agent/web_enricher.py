@@ -28,9 +28,9 @@ from typing import List, Optional, Set, Tuple, Dict, Any, Callable
 from bs4 import BeautifulSoup
 from curl_cffi import requests
 
-from config import DEFAULT_IMPERSONATE, WEB_TIMEOUT, MAX_CONCURRENT_ENRICHMENT
+from config import DEFAULT_IMPERSONATE, WEB_TIMEOUT, MAX_CONCURRENT_ENRICHMENT, MAX_ENRICHMENT_WORKERS
 from agent.schemas import LeadItem, SocialLinks
-from agent.cleaner import clean_phone_number, clean_website_url
+from agent.cleaner import clean_phone_number, clean_website_url, clean_social_url, clean_social_links
 
 # Advanced Email Regex (handles international characters, subdomains, and clean boundaries)
 EMAIL_REGEX = re.compile(
@@ -538,7 +538,7 @@ def extract_emails_from_page(soup: BeautifulSoup, raw_html: str) -> Set[str]:
 
 
 def extract_socials(soup: BeautifulSoup, current_socials: SocialLinks) -> SocialLinks:
-    """Extracts Facebook, Instagram, LinkedIn, and WhatsApp links."""
+    """Extracts Facebook, Instagram, LinkedIn, and WhatsApp links and sanitizes tracking parameters."""
     socials = SocialLinks(
         facebook=current_socials.facebook,
         instagram=current_socials.instagram,
@@ -552,19 +552,19 @@ def extract_socials(soup: BeautifulSoup, current_socials: SocialLinks) -> Social
 
         if not socials.facebook and ("facebook.com/" in href_lower or "fb.com/" in href_lower):
             if is_valid_social_url(href) and "sharer" not in href_lower and "share.php" not in href_lower:
-                socials.facebook = href
+                socials.facebook = clean_social_url(href)
 
         elif not socials.instagram and "instagram.com/" in href_lower:
             if is_valid_social_url(href):
-                socials.instagram = href
+                socials.instagram = clean_social_url(href)
 
         elif not socials.linkedin and "linkedin.com/" in href_lower:
             if is_valid_social_url(href) and "sharearticle" not in href_lower and "sharing" not in href_lower:
-                socials.linkedin = href
+                socials.linkedin = clean_social_url(href)
 
         elif not socials.whatsapp and ("wa.me/" in href_lower or "api.whatsapp.com/send" in href_lower):
             if is_valid_social_url(href):
-                socials.whatsapp = href
+                socials.whatsapp = clean_social_url(href)
 
     return socials
 
@@ -590,21 +590,94 @@ def extract_phone_from_soup(soup: BeautifulSoup, country_code: str = "bd") -> Op
     return None
 
 
-def detect_cms(html_text: str) -> Optional[str]:
-    """Detects content management systems from signatures in HTML source."""
+def detect_cms(html_text: str, headers: Optional[Dict[str, str]] = None) -> Optional[str]:
+    """
+    Detects content management systems and website builders from HTML signatures and HTTP headers.
+    Covers WordPress (Elementor, Divi, WooCommerce), Shopify, Webflow, Framer, Next.js,
+    Wix, Squarespace, GoDaddy Website Builder, Duda, Weebly, HubSpot, Joomla, and Drupal.
+    """
+    if headers:
+        for k, v in headers.items():
+            k_low = k.lower()
+            v_low = str(v).lower()
+            if k_low in ("x-powered-by", "x-generator", "server"):
+                if "next.js" in v_low:
+                    return "Next.js"
+                if "webflow" in v_low:
+                    return "Webflow"
+                if "wp engine" in v_low or "wordpress" in v_low:
+                    return "WordPress"
+                if "shopify" in v_low:
+                    return "Shopify"
+                if "drupal" in v_low:
+                    return "Drupal"
+
+    if not html_text:
+        return None
+
     lower = html_text.lower()
-    if "wp-content" in lower or "wp-includes" in lower:
+
+    # 1. WordPress & Page Builders
+    is_wp = "wp-content" in lower or "wp-includes" in lower or "wp-json" in lower
+    if is_wp:
+        if "elementor" in lower or "elementor-kit" in lower:
+            return "WordPress (Elementor)"
+        elif "et_builder" in lower or "et_divi" in lower or "divi-style" in lower:
+            return "WordPress (Divi)"
+        elif "woocommerce" in lower or "wc-block" in lower:
+            return "WordPress (WooCommerce)"
         return "WordPress"
-    elif "cdn.shopify.com" in lower or "shopify.com" in lower or "myshopify.com" in lower:
-        return "Shopify"
-    elif "wix.com" in lower or "_wix" in lower:
-        return "Wix"
-    elif "squarespace.com" in lower or "static1.squarespace.com" in lower:
-        return "Squarespace"
-    elif "webflow" in lower:
+
+    # Check Elementor standalone signature (sometimes without wp-content in minify)
+    if "elementor-kit" in lower or "elementor-section" in lower:
+        return "WordPress (Elementor)"
+
+    # 2. Webflow
+    if "data-wf-page" in lower or "data-wf-site" in lower or "assets.website-files.com" in lower or "webflow.com" in lower:
         return "Webflow"
-    elif "joomla" in lower:
+
+    # 3. Framer
+    if "data-framer-name" in lower or "__framer__" in lower or "framer.com" in lower:
+        return "Framer"
+
+    # 4. Next.js
+    if "/_next" in lower or "__next" in lower or "next-head-count" in lower or "nextjs" in lower:
+        return "Next.js"
+
+    # 5. Shopify
+    if "cdn.shopify.com" in lower or "shopify.com" in lower or "myshopify.com" in lower or "shopify-section" in lower:
+        return "Shopify"
+
+    # 6. Wix
+    if "wix.com" in lower or "static.wixstatic.com" in lower or "_wix" in lower or "wix-warmup-data" in lower:
+        return "Wix"
+
+    # 7. Squarespace
+    if "squarespace.com" in lower or "static1.squarespace.com" in lower or "sqs-slide" in lower:
+        return "Squarespace"
+
+    # 8. GoDaddy Website Builder
+    if "websites.godaddy.com" in lower or "secureserver.net" in lower or "godaddy.com" in lower or "gd-button" in lower:
+        return "GoDaddy Website Builder"
+
+    # 9. Duda
+    if "duda.co" in lower or "dudaone.com" in lower or "duda-website" in lower or "dm-website" in lower:
+        return "Duda"
+
+    # 10. Weebly
+    if "weebly.com" in lower or "editmysite.com" in lower or "weebly-content" in lower:
+        return "Weebly"
+
+    # 11. HubSpot
+    if "hs-scripts.com" in lower or "hubspot.com" in lower:
+        return "HubSpot"
+
+    # 12. Joomla & Drupal
+    if "joomla" in lower or "option=com_content" in lower:
         return "Joomla"
+    if "drupal.js" in lower or "sites/all/themes" in lower or "sites/default/files" in lower:
+        return "Drupal"
+
     return None
 
 
@@ -940,7 +1013,7 @@ def enrich_single_lead(
 def enrich_leads_concurrently(
     leads: List[LeadItem],
     country_code: str = "bd",
-    max_workers: int = MAX_CONCURRENT_ENRICHMENT,
+    max_workers: int = MAX_ENRICHMENT_WORKERS,
     extract_email_opt: bool = True,
     extract_social_opt: bool = True,
     detect_cms_opt: bool = True,
@@ -952,6 +1025,7 @@ def enrich_leads_concurrently(
 ) -> List[LeadItem]:
     """
     Enriches multiple leads in parallel using ThreadPoolExecutor.
+    Bounded concurrency (MAX_ENRICHMENT_WORKERS) ensures memory stability on Render containers.
     Supports real-time per-lead callback (on_lead_completed) as each individual site finishes.
     Supports in-flight Local SEO audit using cached homepage HTML.
     Supports graceful cancellation via stop_event.
@@ -967,7 +1041,8 @@ def enrich_leads_concurrently(
 
     lead_map = {l.place_id: l for l in leads}
 
-    executor = ThreadPoolExecutor(max_workers=max_workers)
+    bounded_workers = min(max_workers or MAX_ENRICHMENT_WORKERS, MAX_ENRICHMENT_WORKERS)
+    executor = ThreadPoolExecutor(max_workers=bounded_workers)
     try:
         future_to_pid = {}
         for lead in leads_to_enrich:
